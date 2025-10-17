@@ -1,19 +1,41 @@
 name: Build Windows EXE
 on: [workflow_dispatch]
+
 jobs:
   build-windows:
     runs-on: windows-latest
+    defaults:
+      run:
+        shell: pwsh
     steps:
       - uses: actions/checkout@v4
+
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-      - run: |
+
+      - name: Set up venv & install deps
+        run: |
           python -m venv .venv
-          .\.venv\Scripts\activate
-          pip install --upgrade pip
-          pip install pillow
-          pip install pyinstaller minio urllib3 tqdm
+          .\.venv\Scripts\Activate.ps1
+          python -m pip install --upgrade pip
+          pip install pillow pyinstaller minio urllib3 tqdm
+
+      - name: Generate a valid multi-size ICO
+        run: |
+          .\.venv\Scripts\Activate.ps1
+          python - << 'PY'
+          from PIL import Image
+          src = "icon.png"   # <- commit a high-res square PNG into your repo
+          img = Image.open(src).convert("RGBA")
+          sizes = [(16,16),(32,32),(48,48),(64,64),(128,128),(256,256)]
+          img.save("icon.ico", sizes=sizes)
+          print("Wrote icon.ico")
+          PY
+
+      - name: Build EXE with PyInstaller
+        run: |
+          .\.venv\Scripts\Activate.ps1
           pyinstaller --noconfirm --clean --windowed `
             --name "S3_MinIO_Manager" `
             --icon "icon.ico" `
@@ -22,6 +44,7 @@ jobs:
             --hidden-import urllib3 `
             --hidden-import tqdm `
             app.py
+
       - uses: actions/upload-artifact@v4
         with:
           name: S3_MinIO_Manager-win
