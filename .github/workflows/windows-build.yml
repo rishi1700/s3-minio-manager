@@ -17,8 +17,6 @@ jobs:
             --name "S3_MinIO_Manager" `
             --icon "assets\app.ico" `
             --add-data "s3.py;." `
-            --add-data "assets;assets" `
-            --add-data "themes;themes" `
             --hidden-import minio `
             --hidden-import urllib3 `
             --hidden-import tqdm `
