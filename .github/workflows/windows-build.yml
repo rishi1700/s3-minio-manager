@@ -15,7 +15,7 @@ jobs:
           pip install pyinstaller minio urllib3 tqdm
           pyinstaller --noconfirm --clean --windowed `
             --name "S3_MinIO_Manager" `
-            --icon "assets\app.ico" `
+            --icon "icon.ico" `
             --add-data "s3.py;." `
             --hidden-import minio `
             --hidden-import urllib3 `
