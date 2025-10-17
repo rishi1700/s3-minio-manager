@@ -4,9 +4,7 @@ on: [workflow_dispatch]
 jobs:
   build-windows:
     runs-on: windows-latest
-    defaults:
-      run:
-        shell: pwsh
+    defaults: { run: { shell: pwsh } }
     steps:
       - uses: actions/checkout@v4
 
@@ -19,18 +17,29 @@ jobs:
           python -m venv .venv
           .\.venv\Scripts\Activate.ps1
           python -m pip install --upgrade pip
-          pip install pillow pyinstaller minio urllib3 tqdm
+          pip install "pillow>=10.0.0" pyinstaller minio urllib3 tqdm
 
-      - name: Generate a valid multi-size ICO
+      - name: Prepare a valid multi-size ICO
         run: |
           .\.venv\Scripts\Activate.ps1
+          # Remove any stale icon.ico that might be in the repo
+          if (Test-Path icon.ico) { Remove-Item icon.ico -Force }
+          # Ensure you have an icon.png in the repo (square, >=512x512)
+          if (!(Test-Path icon.png)) { throw "Missing icon.png in repo root." }
           python - << 'PY'
-          from PIL import Image
-          src = "icon.png"   # <- commit a high-res square PNG into your repo
-          img = Image.open(src).convert("RGBA")
-          sizes = [(16,16),(32,32),(48,48),(64,64),(128,128),(256,256)]
-          img.save("icon.ico", sizes=sizes)
-          print("Wrote icon.ico")
+          from PIL import Image, IcoImagePlugin
+          src = "icon.png"
+          im = Image.open(src).convert("RGBA")
+          if im.width != im.height:
+              # center-crop to square if needed
+              s = min(im.width, im.height)
+              x = (im.width - s)//2; y = (im.height - s)//2
+              im = im.crop((x,y,x+s,y+s))
+          sizes = [(16,16),(24,24),(32,32),(48,48),(64,64),(128,128),(256,256)]
+          im.save("icon.ico", sizes=sizes)
+          # Verify it's truly an ICO Pillow can read
+          IcoImagePlugin.IcoFile(open("icon.ico","rb"))
+          print("icon.ico generated and verified")
           PY
 
       - name: Build EXE with PyInstaller
