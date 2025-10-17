@@ -20,10 +20,9 @@ jobs:
           python -m venv .venv
           .\.venv\Scripts\Activate.ps1
           python -m pip install --upgrade pip
-          pip install pillow pyinstaller minio urllib3 tqdm
+          pip install pyinstaller minio urllib3 tqdm pillow
 
       - name: Prepare icon (always create a valid ICO)
-        shell: pwsh
         run: |
           .\.venv\Scripts\Activate.ps1
           New-Item -ItemType Directory -Path .build -Force | Out-Null
@@ -32,46 +31,33 @@ import os
 from PIL import Image
 
 OUT = os.path.join(".build", "icon.ico")
-
-def make_ico_from_png(src, out):
-    img = Image.open(src).convert("RGBA")
+def save_multi_size(img, out):
     sizes = [(16,16),(24,24),(32,32),(48,48),(64,64),(128,128),(256,256)]
     img.save(out, sizes=sizes)
-    print(f"✅ Generated ICO from {src} -> {out}")
-
-def reencode_ico(src, out):
-    img = Image.open(src)
-    if img.format != "ICO":
-        raise ValueError("Not an ICO format")
-    sizes = [(16,16),(24,24),(32,32),(48,48),(64,64),(128,128),(256,256)]
-    try:
-        img.save(out, sizes=sizes)
-    except Exception:
-        base = img.copy().convert("RGBA")
-        base.save(out, sizes=sizes)
-    print(f"✅ Re-encoded ICO: {out}")
 
 if os.path.exists("icon.png"):
-    make_ico_from_png("icon.png", OUT)
+    img = Image.open("icon.png").convert("RGBA")
+    save_multi_size(img, OUT)
+    print(f"✅ Generated ICO from icon.png -> {OUT}")
 elif os.path.exists("icon.ico"):
     try:
-        reencode_ico("icon.ico", OUT)
+        img = Image.open("icon.ico")
+        if img.format != "ICO":
+            raise ValueError("Not ICO")
+        save_multi_size(img, OUT)
+        print(f"✅ Re-encoded ICO -> {OUT}")
     except Exception:
-        im = Image.open("icon.ico").convert("RGBA")
-        sizes = [(16,16),(24,24),(32,32),(48,48),(64,64),(128,128),(256,256)]
-        im.save(OUT, sizes=sizes)
-        print(f"⚠️ Coerced existing ICO into valid multi-size ICO: {OUT}")
+        img = Image.open("icon.ico").convert("RGBA")
+        save_multi_size(img, OUT)
+        print(f"⚠️ Coerced existing ICO into valid multi-size ICO -> {OUT}")
 else:
-    # No icon found; mark to skip --icon
     with open(os.environ["GITHUB_ENV"], "a") as f:
         f.write("NO_ICON=1`n")
     print("❌ No icon.png or icon.ico found; will build without an icon.")
 '@ | Set-Content -Path .build\make_icon.py -Encoding UTF8
-
           python .build\make_icon.py
 
       - name: Build EXE with PyInstaller
-        shell: pwsh
         run: |
           .\.venv\Scripts\Activate.ps1
           if ($env:NO_ICON -eq "1") {
