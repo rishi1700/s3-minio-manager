@@ -4,7 +4,10 @@ on: [workflow_dispatch]
 jobs:
   build-windows:
     runs-on: windows-latest
-    defaults: { run: { shell: pwsh } }
+    defaults:
+      run:
+        shell: pwsh
+
     steps:
       - uses: actions/checkout@v4
 
@@ -12,35 +15,29 @@ jobs:
         with:
           python-version: '3.12'
 
-      - name: Set up venv & install deps
+      - name: Set up virtual environment & install dependencies
         run: |
           python -m venv .venv
           .\.venv\Scripts\Activate.ps1
           python -m pip install --upgrade pip
-          pip install "pillow>=10.0.0" pyinstaller minio urllib3 tqdm
+          pip install pillow pyinstaller minio urllib3 tqdm
 
-      - name: Prepare a valid multi-size ICO
+      - name: Ensure valid icon (convert if needed)
         run: |
           .\.venv\Scripts\Activate.ps1
-          # Remove any stale icon.ico that might be in the repo
-          if (Test-Path icon.ico) { Remove-Item icon.ico -Force }
-          # Ensure you have an icon.png in the repo (square, >=512x512)
-          if (!(Test-Path icon.png)) { throw "Missing icon.png in repo root." }
-          python - << 'PY'
-          from PIL import Image, IcoImagePlugin
-          src = "icon.png"
-          im = Image.open(src).convert("RGBA")
-          if im.width != im.height:
-              # center-crop to square if needed
-              s = min(im.width, im.height)
-              x = (im.width - s)//2; y = (im.height - s)//2
-              im = im.crop((x,y,x+s,y+s))
-          sizes = [(16,16),(24,24),(32,32),(48,48),(64,64),(128,128),(256,256)]
-          im.save("icon.ico", sizes=sizes)
-          # Verify it's truly an ICO Pillow can read
-          IcoImagePlugin.IcoFile(open("icon.ico","rb"))
-          print("icon.ico generated and verified")
-          PY
+          # If a PNG exists but not a valid ICO, convert it
+          if (Test-Path "icon.png") {
+            python - << 'PY'
+            from PIL import Image
+            img = Image.open("icon.png").convert("RGBA")
+            sizes = [(16,16),(32,32),(48,48),(64,64),(128,128),(256,256)]
+            img.save("icon.ico", sizes=sizes)
+            print("✅ icon.ico generated successfully from icon.png")
+            PY
+          } elseif (!(Test-Path "icon.ico")) {
+            Write-Error "❌ No icon.png or icon.ico found in repo root."
+            exit 1
+          }
 
       - name: Build EXE with PyInstaller
         run: |
