@@ -12,6 +12,7 @@ jobs:
           python -m venv .venv
           .\.venv\Scripts\activate
           pip install --upgrade pip
+          pip install pillow
           pip install pyinstaller minio urllib3 tqdm
           pyinstaller --noconfirm --clean --windowed `
             --name "S3_MinIO_Manager" `
