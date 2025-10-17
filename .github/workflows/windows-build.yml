@@ -23,55 +23,55 @@ jobs:
           pip install pillow pyinstaller minio urllib3 tqdm
 
       - name: Prepare icon (always create a valid ICO)
+        shell: pwsh
         run: |
           .\.venv\Scripts\Activate.ps1
           New-Item -ItemType Directory -Path .build -Force | Out-Null
-          $py = @'
-          import sys, os
-          from PIL import Image
+          @'
+import os
+from PIL import Image
 
-          def make_ico_from_png(png_path, out_path):
-              img = Image.open(png_path).convert("RGBA")
-              sizes = [(16,16),(24,24),(32,32),(48,48),(64,64),(128,128),(256,256)]
-              img.save(out_path, sizes=sizes)
-              print(f"✅ Generated ICO from PNG: {out_path}")
+OUT = os.path.join(".build", "icon.ico")
 
-          def reencode_ico(ico_path, out_path):
-              # Re-open and re-save to ensure a proper ICO structure.
-              img = Image.open(ico_path)
-              if img.format != "ICO":
-                  raise ValueError("Not an ICO format")
-              # If it already contains multiple sizes, just re-save; else upscale best effort.
-              sizes = [(16,16),(24,24),(32,32),(48,48),(64,64),(128,128),(256,256)]
-              try:
-                  img.save(out_path, sizes=sizes)
-              except Exception:
-                  # Fallback: convert the largest frame to PNG-like image then save as ICO
-                  base = img.copy().convert("RGBA")
-                  base.save(out_path, sizes=sizes)
-              print(f"✅ Re-encoded ICO: {out_path}")
+def make_ico_from_png(src, out):
+    img = Image.open(src).convert("RGBA")
+    sizes = [(16,16),(24,24),(32,32),(48,48),(64,64),(128,128),(256,256)]
+    img.save(out, sizes=sizes)
+    print(f"✅ Generated ICO from {src} -> {out}")
 
-          out = os.path.join(".build", "icon.ico")
-          if os.path.exists("icon.png"):
-              make_ico_from_png("icon.png", out)
-          elif os.path.exists("icon.ico"):
-              try:
-                  reencode_ico("icon.ico", out)
-              except Exception:
-                  # Last resort: try to interpret existing ico as image and make sizes
-                  im = Image.open("icon.ico").convert("RGBA")
-                  sizes = [(16,16),(24,24),(32,32),(48,48),(64,64),(128,128),(256,256)]
-                  im.save(out, sizes=sizes)
-                  print(f"⚠️ Coerced existing ICO into valid multi-size ICO: {out}")
-          else:
-              # No icon found; signal to skip --icon
-              with open(os.environ["GITHUB_ENV"], "a") as f:
-                  f.write("NO_ICON=1\n")
-              print("❌ No icon.png or icon.ico found; will build without an icon.")
-          '@
-          python - << $py
+def reencode_ico(src, out):
+    img = Image.open(src)
+    if img.format != "ICO":
+        raise ValueError("Not an ICO format")
+    sizes = [(16,16),(24,24),(32,32),(48,48),(64,64),(128,128),(256,256)]
+    try:
+        img.save(out, sizes=sizes)
+    except Exception:
+        base = img.copy().convert("RGBA")
+        base.save(out, sizes=sizes)
+    print(f"✅ Re-encoded ICO: {out}")
+
+if os.path.exists("icon.png"):
+    make_ico_from_png("icon.png", OUT)
+elif os.path.exists("icon.ico"):
+    try:
+        reencode_ico("icon.ico", OUT)
+    except Exception:
+        im = Image.open("icon.ico").convert("RGBA")
+        sizes = [(16,16),(24,24),(32,32),(48,48),(64,64),(128,128),(256,256)]
+        im.save(OUT, sizes=sizes)
+        print(f"⚠️ Coerced existing ICO into valid multi-size ICO: {OUT}")
+else:
+    # No icon found; mark to skip --icon
+    with open(os.environ["GITHUB_ENV"], "a") as f:
+        f.write("NO_ICON=1`n")
+    print("❌ No icon.png or icon.ico found; will build without an icon.")
+'@ | Set-Content -Path .build\make_icon.py -Encoding UTF8
+
+          python .build\make_icon.py
 
       - name: Build EXE with PyInstaller
+        shell: pwsh
         run: |
           .\.venv\Scripts\Activate.ps1
           if ($env:NO_ICON -eq "1") {
@@ -85,7 +85,7 @@ jobs:
           } else {
             pyinstaller --noconfirm --clean --windowed `
               --name "S3_MinIO_Manager" `
-              --icon ".build/icon.ico" `
+              --icon ".build\icon.ico" `
               --add-data "s3.py;." `
               --hidden-import minio `
               --hidden-import urllib3 `
