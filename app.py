@@ -765,7 +765,7 @@ class LoginFrame(ttk.Frame):
         buttons.columnconfigure(1, weight=0, minsize=120)
 
         # Keep me signed in
-        self.keep_signed_var = tk.BooleanVar(value=True)
+        self.keep_signed_var = tk.BooleanVar(value=False)
         keep_row = ttk.Frame(form, style="LoginInner.TFrame")
         keep_row.grid(row=12, column=0, sticky="w", pady=(6, 0))
         ttk.Checkbutton(keep_row, text="Keep me signed in", variable=self.keep_signed_var, style="Section.TCheckbutton").pack(side="left")
@@ -1112,6 +1112,7 @@ class LoginFrame(ttk.Frame):
     def _submit(self):
         username = self.username_var.get().strip().lower()
         password = self.password_var.get()
+
         if self.mode == "login":
             if not username or not password:
                 self.message_var.set("Enter both username and password.")
