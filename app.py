@@ -72,7 +72,9 @@ import datetime
 
 _initial_settings = load_s3_settings()
 THEME_PALETTE = {}
+INPUT_MAX_WIDTH = 200
 HEADER_INFO_LABEL = None
+HEADER_TOPBAR = None  # reference to the gradient topbar (created after login)
 CURRENT_USER = {"id": None, "username": None}
 _UP_KEY_TOUCHED = False
 _UP_KEY_SET_PROGRAMMATICALLY = False
@@ -130,7 +132,7 @@ class RoundedField(tk.Frame):
     Set always_glow=True to keep the blue ring on at all times.
     """
 
-    def __init__(self, master, textvariable=None, show=None, height=44, radius=10, padding=12, always_glow=False, **kw):
+    def __init__(self, master, textvariable=None, show=None, height=44, radius=10, padding=12, always_glow=False, max_width=INPUT_MAX_WIDTH, **kw):
         bg = THEME_PALETTE.get("SURFACE", "#1b1d22")
         super().__init__(master, bg=bg, highlightthickness=0, bd=0, **kw)
         self.radius = int(radius)
@@ -204,6 +206,8 @@ class RoundedField(tk.Frame):
     def _set_focus(self, val):
         self.focused = bool(val)
         self._redraw()
+
+
 
     def _redraw(self, event=None):
         w = max(self.winfo_width(), 1)
@@ -428,22 +432,24 @@ class RoundedPill(tk.Canvas):
 
     def _redraw(self, event=None):
         self.delete("all")
-        w = max(self.winfo_width(), 36)
-        h = max(self.winfo_height(), 28)
-        base = _blend(THEME_PALETTE.get("SURFACE", "#1b1d22"), THEME_PALETTE.get("ACCENT", "#4c8df6"), 0.08 if THEME_PALETTE.get("dark", True) else 0.16)
+        w = max(self.winfo_width(), 70)
+        h = max(self.winfo_height(), 22)
+        base = _blend(
+            THEME_PALETTE.get("SURFACE", "#1b1d22"),
+            THEME_PALETTE.get("ACCENT", "#4c8df6"),
+            0.08 if THEME_PALETTE.get("dark", True) else 0.16,
+        )
         if self._hover:
             base = _blend(base, THEME_PALETTE.get("ACCENT", "#4c8df6"), 0.18)
-        outline = _blend(base, THEME_PALETTE.get("BG", "#141518"), 0.35)
-        # rounded rect
-        r = self.radius
-        self.create_arc(1, 1, 1+2*r, 1+2*r, start=90, extent=90, style="pieslice", fill=base, outline=outline)
-        self.create_arc(w-1-2*r, 1, w-1, 1+2*r, start=0, extent=90, style="pieslice", fill=base, outline=outline)
-        self.create_arc(1, h-1-2*r, 1+2*r, h-1, start=180, extent=90, style="pieslice", fill=base, outline=outline)
-        self.create_arc(w-1-2*r, h-1-2*r, w-1, h-1, start=270, extent=90, style="pieslice", fill=base, outline=outline)
-        self.create_rectangle(1+r, 1, w-1-r, h-1, fill=base, outline=outline)
-        self.create_rectangle(1, 1+r, w-1, h-1-r, fill=base, outline=outline)
-        # text
-        self.create_text(w//2, h//2, text=self.text, fill=THEME_PALETTE.get("TEXT", "#e9ecf1"), font=("SF Pro Text", 12, "bold"))
+        # Draw only a simple rectangle (no rounded corners)
+        self.create_rectangle(0, 0, w, h, fill=base, outline="", width=0)
+        self.create_text(
+            w // 2,
+            h // 2,
+            text=self.text,
+            fill=THEME_PALETTE.get("TEXT", "#e9ecf1"),
+            font=("SF Pro Text", 8, "bold"),
+        )
 
     def _set_hover(self, v):
         self._hover = v
@@ -503,7 +509,7 @@ def _replace_entry_with_rounded(entry):
         except Exception:
             show = ""
         # Create the rounded field with persistent glow
-        rf = RoundedField(parent, textvariable=var, show=(show or None), height=44, always_glow=True)
+        rf = RoundedField(parent, textvariable=var, show=(show or None), height=44, always_glow=True, max_width=INPUT_MAX_WIDTH)
         # Match the original grid placement
         rf.grid(row=int(info.get("row", 0)), column=int(info.get("column", 0)),
                 rowspan=int(info.get("rowspan", 1)), columnspan=int(info.get("columnspan", 1)),
@@ -666,17 +672,17 @@ class LoginFrame(ttk.Frame):
         self._password_visible = False
         self._confirm_visible = False
 
-        self.columnconfigure(0, weight=0)
+        # --- HERO (full-height filled gradient panel) ------------------------
+        self.columnconfigure(0, weight=0, minsize=520)   # fixed left panel
         self.columnconfigure(1, weight=0)
         self.columnconfigure(2, weight=1)
-        self.rowconfigure(0, weight=1)
 
         hero_canvas = tk.Canvas(self, highlightthickness=0, bd=0)
         hero_canvas.grid(row=0, column=0, sticky="nsew")
-        hero_canvas.configure(width=420)
+        hero_canvas.configure(width=520)          # match the reference width
         hero_canvas.grid_propagate(False)
         self.hero_canvas = hero_canvas
-        self._hero_grad_start, self._hero_grad_end = THEME_PALETTE.get("HERO_GRADIENT", ("#3a5aff", "#586bff"))
+        self._hero_grad_start, self._hero_grad_end = ("#4c8df6", "#1f3fb5")
 
         # Canvas-based hero content (so gradient fill remains visible)
         self._hero_badge_id = None
@@ -685,7 +691,7 @@ class LoginFrame(ttk.Frame):
         self._hero_point_ids = []
         self._hero_footer_id = None
 
-        # store current strings; _update_hero() will populate and then call _paint_hero_text()
+        # store current strings; _update_hero() will populate and then paint
         self._hero_title_text = ""
         self._hero_summary_text = ""
         self._hero_points_text = []
@@ -717,7 +723,7 @@ class LoginFrame(ttk.Frame):
 
         ttk.Label(form, text="Username", style="LoginLabel.TLabel").grid(row=3, column=0, sticky="w")
         self.username_var = tk.StringVar()
-        user_field = RoundedField(form, textvariable=self.username_var, height=44, always_glow=True)
+        user_field = RoundedField(form, textvariable=self.username_var, height=44, always_glow=True, max_width=INPUT_MAX_WIDTH)
         user_field.grid(row=4, column=0, sticky="we", pady=(8, 22))
         self.username_entry = user_field.entry
         self.username_status = ttk.Label(user_field.trailing_holder, text="", style="LoginCheckIcon.TLabel")
@@ -725,14 +731,14 @@ class LoginFrame(ttk.Frame):
 
         ttk.Label(form, text="Password", style="LoginLabel.TLabel").grid(row=5, column=0, sticky="w")
         self.password_var = tk.StringVar()
-        pass_field = RoundedField(form, textvariable=self.password_var, show="•", height=44, always_glow=True)
+        pass_field = RoundedField(form, textvariable=self.password_var, show="•", height=44, always_glow=True, max_width=INPUT_MAX_WIDTH)
         pass_field.grid(row=6, column=0, sticky="we", pady=(8, 10))
         self.password_entry = pass_field.entry
         # Remove show/hide toggle for password for a cleaner design
 
         self.confirm_label = ttk.Label(form, text="Confirm Password", style="LoginLabel.TLabel")
         self.confirm_var = tk.StringVar()
-        confirm_field = RoundedField(form, textvariable=self.confirm_var, show="•", height=44, always_glow=True)
+        confirm_field = RoundedField(form, textvariable=self.confirm_var, show="•", height=44, always_glow=True, max_width=INPUT_MAX_WIDTH)
         self.confirm_entry = confirm_field.entry
         self.confirm_toggle = ttk.Label(confirm_field.trailing_holder, text="Show", style="LoginLink.TLabel", anchor="center", padding=(0,0,0,0))
         self.confirm_toggle.bind("<Button-1>", lambda *_: self._toggle_confirm_visibility())
@@ -848,116 +854,53 @@ class LoginFrame(ttk.Frame):
         # Clear previous background layer
         canvas.delete("hero_bg")
 
-        # Canvas should blend with the card surface
+        # Match the card surface
         try:
             canvas.configure(background=THEME_PALETTE.get("SURFACE", "#1b1d22"),
                              highlightthickness=0, bd=0)
         except Exception:
             pass
 
-        # Current canvas size
         w = max(canvas.winfo_width(), 1)
         h = max(canvas.winfo_height(), 1)
 
-        # Geometry
-        r = 18                  # corner radius
-        pad = 18                # inset for the gradient panel
-        spread = 6              # shadow spread in px (how far the halo extends)
+        # No more rounded corners: fill rectangular
+        pad = 0      # no inner padding; fill reaches the edge
 
-        # Slight extra padding around the canvas so shadow can breathe
-        try:
-            canvas.configure(scrollregion=(-spread, -spread, w + spread, h + spread))
-        except Exception:
-            pass
+        # --- Premium blue vertical gradient (fully filled, rectangular)
+        top_blue = "#1f3fb5"   # start
+        mid_blue = "#1f3fb5"   # mid richness
+        bot_blue = "#1f3fb5"   # end
 
-        bg = THEME_PALETTE.get("BG", "#141518")
-        surface = THEME_PALETTE.get("SURFACE", "#1b1d22")
-        accent = THEME_PALETTE.get("ACCENT", "#4c8df6")
+        # Set gradient coordinates slightly outside canvas to avoid black  borders
+        gx1, gy1 = -2, -2
+        gx2, gy2 = w + 2, h + 2
+        steps = max(120, gy2 - gy1)
 
-        # Helper: draw a rounded-rectangle "stroke" (outline only)
-        def round_stroke(x1, y1, x2, y2, rad, color, width=2):
-            rad = max(0, min(rad, int((x2 - x1) / 2), int((y2 - y1) / 2)))
-            # Corners
-            canvas.create_arc(x1, y1, x1 + 2*rad, y1 + 2*rad, start=90, extent=90,
-                              style='arc', outline=color, width=width, tags="hero_bg")
-            canvas.create_arc(x2 - 2*rad, y1, x2, y1 + 2*rad, start=0, extent=90,
-                              style='arc', outline=color, width=width, tags="hero_bg")
-            canvas.create_arc(x1, y2 - 2*rad, x1 + 2*rad, y2, start=180, extent=90,
-                              style='arc', outline=color, width=width, tags="hero_bg")
-            canvas.create_arc(x2 - 2*rad, y2 - 2*rad, x2, y2, start=270, extent=90,
-                              style='arc', outline=color, width=width, tags="hero_bg")
-            # Edges
-            canvas.create_line(x1 + rad, y1, x2 - rad, y1, fill=color, width=width, tags="hero_bg")
-            canvas.create_line(x1 + rad, y2, x2 - rad, y2, fill=color, width=width, tags="hero_bg")
-            canvas.create_line(x1, y1 + rad, x1, y2 - rad, fill=color, width=width, tags="hero_bg")
-            canvas.create_line(x2, y1 + rad, x2, y2 - rad, fill=color, width=width, tags="hero_bg")
+        # Remove any canvas border that may still show at the edges
+        canvas.configure(highlightthickness=0, borderwidth=0)
 
-        # --- Soft shadow / halo (drawn first, behind the gradient) ---
-        shadow_steps = 0  # disable halo to remove dark seam between panel and background
-        for i in range(shadow_steps):
-            # expand outward each step
-            inflate = spread - i
-            x1 = pad - inflate
-            y1 = pad - inflate
-            x2 = w - pad + inflate
-            y2 = h - pad + inflate
-            t = i / max(1, (shadow_steps - 1))
-            # darker near panel, lighter outward toward the BG
-            col = _blend(bg, "#000000", 0.22 * (1.0 - t))
-            round_stroke(x1, y1, x2, y2, r + inflate, col, width=2)
+        def left_inset(y):
+            # Disable rounded corner logic: always return 0 (rectangular)
+            return 0
 
-        # --- Gradient fill panel (rounded-rect clipped) ---
-        # Premium vertical blue gradient fully filled, but clipped to a
-        # rounded-rectangle silhouette by narrowing each horizontal band
-        # near the top/bottom corners.
-        top_blue = "#4c8df6"
-        mid_blue = "#3d6fe3"
-        bot_blue = "#1f3fb5"
-
-        gx1, gy1, gx2, gy2 = pad, pad, w - pad, h - pad
-        steps = max(96, (gy2 - gy1))
-
-        def _corner_inset(y):
-            """Return x inset for a given y so the band fits in a rounded rect.
-            We compute the inset needed for the top-left/top-right and
-            bottom-left/bottom-right arcs and take the larger.
-            """
-            inset = 0.0
-            # distance from top edge inside the corner region
-            if y < gy1 + r:
-                dy = r - (y - gy1)
-                inset = max(inset, r - math.sqrt(max(r * r - dy * dy, 0.0)))
-            # distance from bottom edge inside the corner region
-            if y > gy2 - r:
-                dy = r - (gy2 - y)
-                inset = max(inset, r - math.sqrt(max(r * r - dy * dy, 0.0)))
-            return inset
-
+        # Draw thin horizontal strips; all edges perfectly rectangular
         for i in range(steps):
             t = i / (steps - 1)
-            c1 = _blend(top_blue, mid_blue, min(1.0, t * 1.4))
-            col = _blend(c1, bot_blue, max(0.0, t - 0.35) / 0.65)
-            y = gy1 + i * (gy2 - gy1) / steps
-            y1 = int(y)
+            # two-stage blend for depth
+            if t < 0.5:
+                c = _blend(top_blue, mid_blue, t / 0.5)
+            else:
+                c = _blend(mid_blue, bot_blue, (t - 0.5) / 0.5)
+
+            y1 = int(gy1 + i * (gy2 - gy1) / steps)
             y2 = int(gy1 + (i + 1) * (gy2 - gy1) / steps)
-            inset = _corner_inset((y1 + y2) / 2.0)
-            x1 = int(gx1 + inset)
-            x2 = int(gx2 - inset)
-            # draw the band as a simple rect between the clipped x bounds
-            canvas.create_rectangle(x1, y1, x2, y2, fill=col, outline=col, tags="hero_bg")
+            x_inset_left = left_inset((y1 + y2) * 0.5)
+            x1 = int(gx1 + x_inset_left)   # always 0 inset
+            x2 = int(gx2)                  # right edge perfectly straight
+            canvas.create_rectangle(x1, y1, x2, y2, fill=c, outline=c, tags="hero_bg")
 
-        # Optional: a very subtle split border to give depth without a hairline
-        if False:  # border disabled to avoid visible dark outline
-            light = _blend(accent, "#ffffff", 0.25)
-            dark = _blend(accent, "#000000", 0.10)
-            # top & left (light)
-            canvas.create_line(gx1 + r, gy1, gx2 - r, gy1, fill=light, width=1, tags="hero_bg")
-            canvas.create_line(gx1, gy1 + r, gx1, gy2 - r, fill=light, width=1, tags="hero_bg")
-            # bottom & right (slightly darker)
-            canvas.create_line(gx1 + r, gy2, gx2 - r, gy2, fill=dark, width=1, tags="hero_bg")
-            canvas.create_line(gx2, gy1 + r, gx2, gy2 - r, fill=dark, width=1, tags="hero_bg")
-
-        # Ensure background is behind the text/content
+        # Keep background behind text
         canvas.tag_lower("hero_bg")
         self._paint_hero_text()
 
@@ -1301,6 +1244,149 @@ class LoginFrame(ttk.Frame):
         except Exception:
             on_done()
 
+import tkinter as tk
+from tkinter import ttk
+
+def create_topbar(parent, username, on_logout):
+    """
+    Gradient top bar with app title (left) and user info + logout (right).
+    Uses a Canvas for a smooth vertical blue gradient and an overlay frame
+    for the interactive controls.
+    """
+    # Wrapper frame so the caller still receives a normal widget
+    topbar = ttk.Frame(parent, style="Topbar.TFrame")
+    topbar.pack(fill="x", side="top")
+    topbar.update_idletasks()
+
+    # Canvas draws the gradient background
+    canvas = tk.Canvas(topbar, height=54, highlightthickness=0, bd=0)
+    canvas.pack(fill="x", expand=True)
+    canvas._grad_from = "#3a5aff"
+    canvas._grad_mid  = "#4a6aff"
+    canvas._grad_to   = "#5b8cfe"
+
+    # Overlay frame hosts the controls
+    inner = ttk.Frame(topbar, style="TopbarInner.TFrame")
+    inner.place(relx=0, rely=0, relwidth=1, relheight=1)
+
+    # Left App Title
+    lbl_title = ttk.Label(
+        inner,
+        text="S3 / MinIO Manager",
+        style="TopbarTitle.TLabel",
+        anchor="w"
+    )
+    lbl_title.pack(side="left", padx=(16, 0))
+
+    # Right side: user avatar + name + logout
+    right = ttk.Frame(inner, style="TopbarInner.TFrame")
+    right.pack(side="right", padx=(12, 12))
+
+    # Avatar (rounded pill look)
+    avatar = ttk.Label(
+        right,
+        text="👤",
+        style="TopbarAvatar.TLabel",
+        anchor="center",
+        width=2
+    )
+    avatar.pack(side="left", padx=(0, 6))
+
+    # Username
+    safe_name = (username or "").strip()
+    if not safe_name:
+        safe_name = "User"
+    lbl_username = ttk.Label(
+        right,
+        text=safe_name.capitalize(),
+        style="TopbarUser.TLabel",
+        anchor="center"
+    )
+    lbl_username.pack(side="left", padx=(0, 10))
+    # Expose for updates
+    topbar._user_label = lbl_username
+
+    # Logout (canvas-based pill to avoid white hover flash)
+    logout_btn = RoundedPill(
+        right,
+        text="⎋ Logout",
+        radius=6,
+        pad_x=4,
+        pad_y=2,
+        command=on_logout,
+    )
+    logout_btn.configure(width=90)
+    logout_btn.pack(side="left", padx=16, pady=6)
+    # Ensure logout button is only packed, not gridded anywhere
+    # If you see any logout_btn.grid(...) below, remove or comment it out.
+    topbar._logout_btn = logout_btn
+
+    def _draw_topbar_gradient(event=None):
+        w = max(canvas.winfo_width(), 1)
+        h = max(canvas.winfo_height(), 1)
+        canvas.delete("grad")
+        steps = max(64, h)
+        # Rounded ends: draw a subtle rounded rect mask look by padding
+        pad_y = 0
+        y1 = pad_y
+        y2 = h - pad_y
+        for i in range(steps):
+            t = i / (steps - 1)
+            # two‑stop blend for a richer gradient
+            if t < 0.5:
+                # from start -> mid
+                tt = t / 0.5
+                col = _blend(canvas._grad_from, canvas._grad_mid, tt)
+            else:
+                # from mid -> end
+                tt = (t - 0.5) / 0.5
+                col = _blend(canvas._grad_mid, canvas._grad_to, tt)
+            y = int(y1 + t * (y2 - y1))
+            canvas.create_rectangle(0, y, w, y + 1, outline=col, fill=col, tags="grad")
+
+    # initial paint + bind resize
+    _draw_topbar_gradient()
+    canvas.bind("<Configure>", _draw_topbar_gradient)
+
+    # Keep references for future theme changes if needed
+    topbar._gradient_canvas = canvas
+    topbar._overlay = inner
+    return topbar
+
+
+def setup_custom_styles(root):
+    style = ttk.Style(root)
+
+    # Base containers
+    style.configure("Topbar.TFrame", background=THEME_PALETTE.get("BG", "#0f1115"))
+    style.configure("TopbarInner.TFrame", background="", relief="flat")
+
+    # Title on the left
+    style.configure(
+        "TopbarTitle.TLabel",
+        font=("SF Pro Display", 13, "bold"),
+        foreground="#F5F7FF",
+        background=""
+    )
+
+    # Avatar pill (light overlay to stand out on gradient)
+    style.configure(
+        "TopbarAvatar.TLabel",
+        font=("SF Pro Text", 12, "bold"),
+        foreground="#ffffff",
+        background=_blend(THEME_PALETTE.get("ACCENT", "#5b8cfe"), "#000000", 0.25),
+        padding=(8, 4)
+    )
+
+    # Username
+    style.configure(
+        "TopbarUser.TLabel",
+        font=("SF Pro Text", 11),
+        foreground="#E6EBF3",
+        background=""
+    )
+
+    # (Logout button style for TopbarLogout.TButton removed; now using canvas-based pill)
 
 def _start_login(root, card_factory):
     result = {"done": False}
@@ -1379,11 +1465,38 @@ def _start_login(root, card_factory):
     login_background.bind("<Configure>", _resize_login_card)
     root.after(50, _resize_login_card)
 
-    def _success(user_id, username):
-        CURRENT_USER["id"] = user_id
-        CURRENT_USER["username"] = username
+    def _success(uid, uname):
+        # Save session is already handled inside LoginFrame._finalize -> on_success
+        CURRENT_USER["id"] = uid
+        CURRENT_USER["username"] = uname
+
+        # Signal success and break out of the login loop
         result["done"] = True
-        root.quit()
+        try:
+            # closing the login UI
+            for widget in root.winfo_children():
+                widget.destroy()
+        except Exception:
+            pass
+
+        # Quit the local mainloop started by _start_login so caller can continue
+        try:
+            root.after(0, root.quit)
+        except Exception:
+            pass
+
+        # Local logout handler (does not rely on later definitions)
+        def __logout():
+            if not messagebox.askyesno("Log out", "Log out and return to sign-in?", parent=root):
+                return
+            try:
+                cfg = load_s3_settings()
+                cfg.pop("SESSION", None)
+                save_s3_settings(cfg)
+            except Exception:
+                pass
+            show_login_overlay(root, card)
+
 
     def _cancel():
         result["done"] = False
@@ -1510,19 +1623,76 @@ def show_login_overlay(parent, card_factory):
 
 def _refresh_header_info():
     env_bits = []
-    if os.environ.get("AWS_REGION"): env_bits.append(f"region: {os.environ.get('AWS_REGION')}")
-    if os.environ.get("AWS_S3_ENDPOINT"): env_bits.append(os.environ.get("AWS_S3_ENDPOINT"))
-    info_texts = []
-    if CURRENT_USER["username"]:
-        info_texts.append(f"user: {CURRENT_USER['username']}")
-    if env_bits:
-        info_texts.extend(env_bits)
+    if os.environ.get("AWS_REGION"):
+        env_bits.append(f"region: {os.environ.get('AWS_REGION')}")
+    if os.environ.get("AWS_S3_ENDPOINT"):
+        env_bits.append(os.environ.get("AWS_S3_ENDPOINT"))
+
+    # Recreate the premium topbar if it was destroyed by a geometry mix-up
+    def _exists(w):
+        try:
+            return w is not None and w.winfo_exists()
+        except Exception:
+            return False
+
+    try:
+        root_win = globals().get("root")
+        if not _exists(globals().get("HEADER_TOPBAR")) and root_win is not None:
+            try:
+                setup_custom_styles(root_win)
+            except Exception:
+                pass
+            try:
+                uname = (CURRENT_USER.get("username") or "User").strip()
+                globals()["HEADER_TOPBAR"] = create_topbar(root_win, username=uname, on_logout=lambda: show_login_overlay(root_win, card))
+            except Exception:
+                pass
+            # Ensure there is a dedicated body container below the topbar
+            if not _exists(globals().get("APP_BODY")) and root_win is not None:
+                body = ttk.Frame(root_win)
+                body.pack(fill="both", expand=True)  # all app content goes here, not on root
+                globals()["APP_BODY"] = body
+
+        # Keep username in sync
+        if _exists(globals().get("HEADER_TOPBAR")) and CURRENT_USER.get("username"):
+            try:
+                HEADER_TOPBAR._user_label.configure(text=CURRENT_USER["username"].strip().capitalize() or "User")
+            except Exception:
+                pass
+    except Exception:
+        pass
+
+    # Small info label (legacy)
     try:
         if HEADER_INFO_LABEL is not None:
-            HEADER_INFO_LABEL.config(text=" | ".join(info_texts))
+            HEADER_INFO_LABEL.config(text="  |  ".join(env_bits))
+    except Exception:
+        pass
+
+    # Status bar
+    try:
         statusbar.config(text="Ready")
     except Exception:
         pass
+# ---------------- Main UI factory (fallback) ----------------
+# We keep a *minimal* fallback to avoid NameError if your real
+# create_dashboard hasn't been imported yet. The fallback returns
+# an empty container so it won't collide with the real UI.
+if 'create_dashboard' not in globals():
+    def create_dashboard(parent):
+        """Silent fallback: just return an empty container frame."""
+        from tkinter import ttk as _ttk
+        container = _ttk.Frame(parent)
+        container.pack(fill="both", expand=True)
+        # Do not add any extra widgets here — the real app will
+        # populate this area. We still upgrade entries defensively
+        # in case downstream code adds them later.
+        try:
+            _upgrade_inputs_in(container)
+        except Exception:
+            pass
+        return container
+
 # ---------------- Small helpers ----------------
 _BUCKET_RE = re.compile(r"^(?!-)[a-z0-9-]{3,63}(?<!-)$")
 def is_valid_bucket_name(name):
@@ -2146,44 +2316,20 @@ THEME_PALETTE.update(palette)
 if not _start_login(root, card):
     sys.exit(0)
 
+HEADER_TOPBAR = create_topbar(
+    root,
+    username=CURRENT_USER.get("username") or "User",
+    on_logout=lambda: show_login_overlay(root, card)
+)
+APP_BODY = ttk.Frame(root)
+APP_BODY.pack(fill="both", expand=True)
+_refresh_header_info()
+create_dashboard(APP_BODY)
+
 root.update_idletasks()
 _set_initial_window_size(root)
 root.deiconify()
 
-# Header
-header = ttk.Frame(root, style="Toolbar.TFrame")
-header.pack(fill="x", padx=14, pady=(10,4))
-ttk.Label(header, text="S3 / MinIO Manager", style="Header.TLabel").pack(side="left")
-
-def _logout():
-    if not messagebox.askyesno("Log out", "Log out and return to sign-in?", parent=root):
-        return
-    # Clear persisted session and restart process cleanly
-    try:
-        cfg = load_s3_settings()
-        cfg.pop("SESSION", None)
-        save_s3_settings(cfg)
-    except Exception:
-        pass
-    try:
-        statusbar.config(text="Logging out…")
-    except Exception:
-        pass
-    # Transition to a full-overlay login inside the same window
-    show_login_overlay(root, card)
-
-ttk.Button(header, text="Logout", style="Ghost.TButton", command=_logout).pack(side="right", padx=(0,8))
-env_bits = []
-if os.environ.get("AWS_REGION"): env_bits.append(f"region: {os.environ.get('AWS_REGION')}")
-if os.environ.get("AWS_S3_ENDPOINT"): env_bits.append(os.environ.get("AWS_S3_ENDPOINT"))
-info_texts = []
-if CURRENT_USER["username"]:
-    info_texts.append(f"user: {CURRENT_USER['username']}")
-if env_bits:
-    info_texts.extend(env_bits)
-if info_texts:
-    HEADER_INFO_LABEL = ttk.Label(header, text=" | ".join(info_texts), style="Small.TLabel")
-    HEADER_INFO_LABEL.pack(side="right")
 
 
 
