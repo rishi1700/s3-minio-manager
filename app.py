@@ -49,7 +49,7 @@ if missing:
 
 # Safe to import GUI + MinIO
 import tkinter as tk
-from tkinter import filedialog, messagebox, ttk
+from tkinter import filedialog, messagebox, simpledialog, ttk
 from tkinter import font as tkfont
 from minio import Minio
 from minio.error import S3Error
@@ -60,6 +60,1211 @@ from s3 import (
     save_settings as save_s3_settings,
     CONFIG_PATH as S3_CONFIG_PATH,
 )
+from auth_store import (
+    verify_user as auth_verify_user,
+    create_user as auth_create_user,
+    user_count as auth_user_count,
+    list_usernames as auth_list_usernames,
+    get_user as auth_get_user,
+)
+import secrets
+import datetime
+
+_initial_settings = load_s3_settings()
+THEME_PALETTE = {}
+HEADER_INFO_LABEL = None
+CURRENT_USER = {"id": None, "username": None}
+
+
+def _hex_to_rgb_tuple(value):
+    v = value.lstrip("#")
+    if len(v) == 3:
+        v = "".join(ch * 2 for ch in v)
+    return tuple(int(v[i:i+2], 16) for i in (0, 2, 4))
+
+
+def _blend(c1, c2, t):
+    r1, g1, b1 = _hex_to_rgb_tuple(c1)
+    r2, g2, b2 = _hex_to_rgb_tuple(c2)
+    r = int(r1 + (r2 - r1) * float(t))
+    g = int(g1 + (g2 - g1) * float(t))
+    b = int(b1 + (b2 - b1) * float(t))
+    return f"#{r:02x}{g:02x}{b:02x}"
+
+
+class RoundedField(tk.Frame):
+    """Rounded input wrapper with a canvas border and optional trailing widget.
+    Set always_glow=True to keep the blue ring on at all times.
+    """
+
+    def __init__(self, master, textvariable=None, show=None, height=44, radius=10, padding=12, always_glow=False, **kw):
+        bg = THEME_PALETTE.get("SURFACE", "#1b1d22")
+        super().__init__(master, bg=bg, highlightthickness=0, bd=0, **kw)
+        self.radius = int(radius)
+        self.pad = int(padding)
+        self.height = int(height)
+        self.border = 2
+        self.focused = False
+        self.always_glow = bool(always_glow)
+        self.canvas = tk.Canvas(self, height=self.height, highlightthickness=0, bd=0, bg=bg)
+        self.canvas.grid(row=0, column=0, sticky="nsew")
+        self.columnconfigure(0, weight=1)
+        self.rowconfigure(0, weight=1)
+
+        self.overlay = tk.Frame(self, bg=bg, highlightthickness=0, bd=0)
+        self.overlay.place(x=self.pad, y=self.pad, width=10, height=self.height - self.pad * 2)
+        self.overlay.grid_propagate(False)
+        self.overlay.columnconfigure(0, weight=1)
+
+        # Use a plain tk.Entry so we can force exact colors; this avoids cases
+        # where ttk theme overrides make text invisible on some mac builds.
+        self.entry = tk.Entry(
+            self.overlay,
+            textvariable=textvariable,
+            show=show if show else "",
+            relief="flat",
+            highlightthickness=0,
+            highlightbackground=THEME_PALETTE.get("SURFACE", "#1b1d22"),
+            highlightcolor=THEME_PALETTE.get("SURFACE", "#1b1d22"),
+            bd=0,
+            bg=THEME_PALETTE.get("SURFACE", "#1b1d22"),
+            # Force a high‑contrast foreground to avoid theme overrides on macOS
+            fg="#e6ebf3",
+            insertbackground="#e6ebf3",
+            selectbackground=_blend(THEME_PALETTE.get("ACCENT", "#4c8df6"), "#ffffff", 0.15),
+            selectforeground="#ffffff",
+            disabledbackground=THEME_PALETTE.get("SURFACE", "#1b1d22"),
+            disabledforeground=_blend(THEME_PALETTE.get("TEXT", "#e9ecf1"), THEME_PALETTE.get("BG", "#141518"), 0.5),
+            font=("SF Pro Text", 14)
+        )
+        # Slightly larger internal padding keeps glyphs clear of the border on macOS
+        self.entry.grid(row=0, column=0, sticky="nsew", ipady=7, pady=(0,0))
+
+        self.trailing_holder = tk.Frame(self.overlay, bg=bg, highlightthickness=0, bd=0)
+        self.trailing_holder.grid(row=0, column=1, sticky="ns", padx=(10, 0))
+        self.trailing_holder.configure(width=64)
+        self.overlay.columnconfigure(1, weight=0, minsize=64)
+        self.overlay.rowconfigure(0, weight=1)
+        self.trailing_holder.grid_propagate(False)
+
+        self.canvas.bind("<Configure>", self._redraw)
+        self.entry.bind("<FocusIn>", lambda e: self._set_focus(True))
+        self.entry.bind("<FocusOut>", lambda e: self._set_focus(False))
+        self._redraw()
+
+    def _set_focus(self, val):
+        self.focused = bool(val)
+        self._redraw()
+
+    def _redraw(self, event=None):
+        w = max(self.winfo_width(), 1)
+        h = self.height
+        self.canvas.config(height=h)
+        # Place overlay exactly inside the ring without negative offset so text baseline is centered
+        self.overlay.place(x=self.pad + self.border, y=self.pad + self.border,
+                           width=max(w - (self.pad + self.border) * 2, 10),
+                           height=h - (self.pad + self.border) * 2)
+        self.canvas.delete("all")
+
+        # Background: match surface exactly (no shadow look)
+        surface = THEME_PALETTE.get("SURFACE", "#1b1d22")
+        r = self.radius
+        self._round_rect(1, 1, w - 1, h - 1, r, fill=surface, outline=surface, width=1)
+
+        # Edge shine: draw a split blue border (top/left lighter, bottom/right richer)
+        if self.focused or self.always_glow:
+            accent = THEME_PALETTE.get("ACCENT", "#4c8df6")
+            light = _blend(accent, "#ffffff", 0.45)
+            mid   = _blend(accent, "#ffffff", 0.25)
+            dark  = accent
+            # Outer heavy stroke gives the main glow
+            self._split_gradient_border(1, 1, w-1, h-1, r, light, dark, width=2)
+            # Inner fine stroke softens the transition
+            self._split_gradient_border(2, 2, w-2, h-2, max(0, r-1), mid, accent, width=1)
+        else:
+            subtle = _blend(surface, THEME_PALETTE.get("BG", "#141518"), 0.28)
+            self._split_gradient_border(1, 1, w-1, h-1, r, subtle, subtle, width=1)
+
+    def _round_rect(self, x1, y1, x2, y2, r, **kwargs):
+        r = max(0, min(r, int((x2 - x1) / 2), int((y2 - y1) / 2)))
+        if r <= 0:
+            return self.canvas.create_rectangle(x1, y1, x2, y2, **kwargs)
+        # four arcs
+        self.canvas.create_arc(x1, y1, x1 + 2 * r, y1 + 2 * r, start=90, extent=90, style="pieslice", **kwargs)
+        self.canvas.create_arc(x2 - 2 * r, y1, x2, y1 + 2 * r, start=0, extent=90, style="pieslice", **kwargs)
+        self.canvas.create_arc(x1, y2 - 2 * r, x1 + 2 * r, y2, start=180, extent=90, style="pieslice", **kwargs)
+        self.canvas.create_arc(x2 - 2 * r, y2 - 2 * r, x2, y2, start=270, extent=90, style="pieslice", **kwargs)
+        # center rectangles to connect arcs
+        self.canvas.create_rectangle(x1 + r, y1, x2 - r, y2, **kwargs)
+        self.canvas.create_rectangle(x1, y1 + r, x2, y2 - r, **kwargs)
+
+    def _split_gradient_border(self, x1, y1, x2, y2, r, col_top_left, col_bottom_right, width=2):
+        """Draw a rounded rectangle border with two tones: lighter on top/left,
+        richer on bottom/right to approximate a gradient ring.
+        """
+        r = max(0, min(r, int((x2 - x1) / 2), int((y2 - y1) / 2)))
+        # arcs as stroked arcs (style='arc')
+        # top-left corner + top/left edges: light
+        self.canvas.create_arc(x1, y1, x1 + 2*r, y1 + 2*r, start=90, extent=90, style='arc', outline=col_top_left, width=width)
+        # top edge
+        self.canvas.create_line(x1 + r, y1, x2 - r, y1, fill=col_top_left, width=width)
+        # left edge
+        self.canvas.create_line(x1, y1 + r, x1, y2 - r, fill=col_top_left, width=width)
+        # bottom-right corner + bottom/right edges: dark
+        self.canvas.create_arc(x2 - 2*r, y2 - 2*r, x2, y2, start=270, extent=90, style='arc', outline=col_bottom_right, width=width)
+        # bottom edge
+        self.canvas.create_line(x1 + r, y2, x2 - r, y2, fill=col_bottom_right, width=width)
+        # right edge
+        self.canvas.create_line(x2, y1 + r, x2, y2 - r, fill=col_bottom_right, width=width)
+        # remaining two arcs to close the ring with appropriate tones
+        self.canvas.create_arc(x2 - 2*r, y1, x2, y1 + 2*r, start=0, extent=90, style='arc', outline=col_top_left, width=width)
+        self.canvas.create_arc(x1, y2 - 2*r, x1 + 2*r, y2, start=180, extent=90, style='arc', outline=col_bottom_right, width=width)
+
+    def place_right(self, widget):
+        holder = self.trailing_holder
+        # Remove any existing children that are not the same widget
+        for child in list(holder.winfo_children()):
+            if child is widget:
+                continue
+            try:
+                child.destroy()
+            except Exception:
+                pass
+        try:
+            # For ttk.Label trailing controls (e.g., "Show"), center vertically
+            if str(widget.master) != str(holder):
+                # Cannot reparent in Tk – create a visually identical clone
+                try:
+                    text = widget.cget("text")
+                except Exception:
+                    text = ""
+                clone = ttk.Label(holder, text=text, style="LoginLink.TLabel", anchor="center", padding=(0,0,0,0))
+                clone.pack(side="right", fill="both", expand=True, padx=(8,0))
+                return clone
+            # Reuse existing widget, ensure it fills the holder to stay centered
+            try:
+                widget.configure(anchor="center")
+            except Exception:
+                pass
+            widget.pack_forget()
+            widget.pack(side="right", fill="both", expand=True, padx=(8,0))
+        except Exception:
+            # Fallback clone if anything above fails
+            try:
+                text = widget.cget("text")
+            except Exception:
+                text = ""
+            ttk.Label(holder, text=text, style="LoginLink.TLabel", anchor="center", padding=(0,0,0,0)).pack(side="right", fill="both", expand=True, padx=(8,0))
+
+
+class StrengthMeter(tk.Canvas):
+    def __init__(self, master, height=12, **kw):
+        super().__init__(master, height=height, highlightthickness=0, bd=0, **kw)
+        self.score = 0
+        self.height = height
+        self.bind("<Configure>", lambda e: self._redraw())
+
+    def update_score(self, score):
+        self.score = max(0, min(100, int(score)))
+        self._redraw()
+
+    def _redraw(self):
+        self.delete("all")
+        w = max(self.winfo_width(), 1)
+        h = self.height
+        bg = _blend(THEME_PALETTE.get("SURFACE", "#1b1d22"), THEME_PALETTE.get("BG", "#141518"), 0.2)
+        # trough
+        self.create_rectangle(0, h // 2 - 3, w, h // 2 + 3, fill=bg, outline=bg)
+        # segments
+        colors = ["#ff7a59", "#f39c12", "#f7d154", "#3ddc84"]
+        segs = len(colors)
+        seg_w = w / segs
+        filled = w * (self.score / 100.0)
+        x = 0
+        for i, col in enumerate(colors):
+            x2 = (i + 1) * seg_w
+            draw_to = min(x2, filled)
+            if draw_to > x:
+                self.create_rectangle(x + 1, h // 2 - 4, draw_to - 1, h // 2 + 4, fill=col, outline=col)
+            x = x2
+
+
+class RoundedButton(tk.Canvas):
+    def __init__(self, master, text, command=None, primary=True, radius=10, pad_x=18, pad_y=10):
+        super().__init__(master, height=40, highlightthickness=0, bd=0, background=THEME_PALETTE.get("SURFACE", "#1b1d22"))
+        self.text = text
+        self.command = command
+        self.radius = radius
+        self.pad_x = pad_x
+        self.pad_y = pad_y
+        self.primary = primary
+        self.state = "normal"
+        self.bind("<Configure>", self._redraw)
+        self.bind("<Button-1>", self._on_click)
+        self.bind("<Enter>", lambda e: self._set_hover(True))
+        self.bind("<Leave>", lambda e: self._set_hover(False))
+        self._hover = False
+
+    def configure(self, **kw):
+        if "text" in kw:
+            self.text = kw.pop("text")
+        if "state" in kw:
+            self.state = kw.pop("state")
+        if kw:
+            super().configure(**kw)
+        self._redraw()
+
+    def _colors(self):
+        if self.primary:
+            base = THEME_PALETTE.get("ACCENT", "#4c8df6")
+            hover = _blend(base, "#ffffff", 0.12)
+            text = "#ffffff"
+            border = base
+        else:
+            base = _blend(THEME_PALETTE.get("SURFACE", "#1b1d22"), THEME_PALETTE.get("BG", "#141518"), 0.22)
+            hover = _blend(base, THEME_PALETTE.get("ACCENT", "#4c8df6"), 0.18)
+            text = THEME_PALETTE.get("TEXT", "#e9ecf1")
+            border = _blend(base, THEME_PALETTE.get("BG", "#141518"), 0.35)
+        if self._hover and self.state == "normal":
+            base = hover
+        if self.state == "disabled":
+            base = _blend(base, THEME_PALETTE.get("BG", "#141518"), 0.35)
+            text = _blend(text, THEME_PALETTE.get("BG", "#141518"), 0.35)
+        return base, border, text
+
+    def _round_rect(self, x1, y1, x2, y2, r, fill, outline, width):
+        r = max(0, min(r, int((x2 - x1)/2), int((y2 - y1)/2)))
+        self.create_arc(x1, y1, x1+2*r, y1+2*r, start=90, extent=90, style="pieslice", fill=fill, outline=outline, width=width)
+        self.create_arc(x2-2*r, y1, x2, y1+2*r, start=0, extent=90, style="pieslice", fill=fill, outline=outline, width=width)
+        self.create_arc(x1, y2-2*r, x1+2*r, y2, start=180, extent=90, style="pieslice", fill=fill, outline=outline, width=width)
+        self.create_arc(x2-2*r, y2-2*r, x2, y2, start=270, extent=90, style="pieslice", fill=fill, outline=outline, width=width)
+        self.create_rectangle(x1+r, y1, x2-r, y2, fill=fill, outline=outline, width=width)
+        self.create_rectangle(x1, y1+r, x2, y2-r, fill=fill, outline=outline, width=width)
+
+    def _redraw(self, event=None):
+        self.delete("all")
+        w = max(self.winfo_width(), 60)
+        h = max(self.winfo_height(), 36)
+        base, border, textcol = self._colors()
+        self._round_rect(1, 1, w-1, h-1, self.radius, fill=base, outline=border, width=1)
+        self.create_text(w//2, h//2, text=self.text, fill=textcol, font=("SF Pro Text", 12, "bold"))
+
+    def _set_hover(self, val):
+        self._hover = val
+        self._redraw()
+
+    def _on_click(self, event):
+        if self.state == "disabled":
+            return
+        if callable(self.command):
+            self.command()
+
+
+class RoundedPill(tk.Canvas):
+    def __init__(self, master, text="", radius=12, pad_x=12, pad_y=8, command=None):
+        super().__init__(master, height=36, highlightthickness=0, bd=0, background=THEME_PALETTE.get("SURFACE", "#1b1d22"))
+        self.text = text
+        self.radius = radius
+        self.pad_x = pad_x
+        self.pad_y = pad_y
+        self.command = command
+        self.bind("<Configure>", self._redraw)
+        self.bind("<Button-1>", lambda e: command() if callable(command) else None)
+        self._hover = False
+        self.bind("<Enter>", lambda e: self._set_hover(True))
+        self.bind("<Leave>", lambda e: self._set_hover(False))
+
+    def _redraw(self, event=None):
+        self.delete("all")
+        w = max(self.winfo_width(), 36)
+        h = max(self.winfo_height(), 28)
+        base = _blend(THEME_PALETTE.get("SURFACE", "#1b1d22"), THEME_PALETTE.get("ACCENT", "#4c8df6"), 0.08 if THEME_PALETTE.get("dark", True) else 0.16)
+        if self._hover:
+            base = _blend(base, THEME_PALETTE.get("ACCENT", "#4c8df6"), 0.18)
+        outline = _blend(base, THEME_PALETTE.get("BG", "#141518"), 0.35)
+        # rounded rect
+        r = self.radius
+        self.create_arc(1, 1, 1+2*r, 1+2*r, start=90, extent=90, style="pieslice", fill=base, outline=outline)
+        self.create_arc(w-1-2*r, 1, w-1, 1+2*r, start=0, extent=90, style="pieslice", fill=base, outline=outline)
+        self.create_arc(1, h-1-2*r, 1+2*r, h-1, start=180, extent=90, style="pieslice", fill=base, outline=outline)
+        self.create_arc(w-1-2*r, h-1-2*r, w-1, h-1, start=270, extent=90, style="pieslice", fill=base, outline=outline)
+        self.create_rectangle(1+r, 1, w-1-r, h-1, fill=base, outline=outline)
+        self.create_rectangle(1, 1+r, w-1, h-1-r, fill=base, outline=outline)
+        # text
+        self.create_text(w//2, h//2, text=self.text, fill=THEME_PALETTE.get("TEXT", "#e9ecf1"), font=("SF Pro Text", 12, "bold"))
+
+    def _set_hover(self, v):
+        self._hover = v
+        self._redraw()
+
+
+class LoginFrame(ttk.Frame):
+    def __init__(self, master, on_success, on_cancel):
+        super().__init__(master, style="LoginShell.TFrame")
+        self.configure(padding=0)
+        self.on_success = on_success
+        self.on_cancel = on_cancel
+        self.mode = "register" if auth_user_count() == 0 else "login"
+        self._password_visible = False
+        self._confirm_visible = False
+
+        self.columnconfigure(0, weight=0)
+        self.columnconfigure(1, weight=0)
+        self.columnconfigure(2, weight=1)
+        self.rowconfigure(0, weight=1)
+
+        hero_canvas = tk.Canvas(self, highlightthickness=0, bd=0)
+        hero_canvas.grid(row=0, column=0, sticky="nsew")
+        hero_canvas.configure(width=420)
+        hero_canvas.grid_propagate(False)
+        self.hero_canvas = hero_canvas
+        self._hero_grad_start, self._hero_grad_end = THEME_PALETTE.get("HERO_GRADIENT", ("#3a5aff", "#586bff"))
+
+        # Canvas-based hero content (so gradient fill remains visible)
+        self._hero_badge_id = None
+        self._hero_title_id = None
+        self._hero_summary_id = None
+        self._hero_point_ids = []
+        self._hero_footer_id = None
+
+        # store current strings; _update_hero() will populate and then call _paint_hero_text()
+        self._hero_title_text = ""
+        self._hero_summary_text = ""
+        self._hero_points_text = []
+        self._hero_footer_text = ""
+
+        hero_canvas.bind("<Configure>", self._on_hero_resize)
+        self._draw_hero_gradient()
+
+        divider = ttk.Frame(self, style="LoginCardDivider.TFrame", width=1)
+        divider.grid(row=0, column=1, sticky="ns", pady=36, padx=(0, 0))
+
+        form = ttk.Frame(self, style="LoginInner.TFrame")
+        form.grid(row=0, column=2, sticky="nsew", padx=(32, 24))
+        form.columnconfigure(0, weight=1)
+
+        header = ttk.Frame(form, style="LoginHeader.TFrame")
+        header.grid(row=0, column=0, sticky="we")
+        header.columnconfigure(0, weight=1)
+        self.title_lbl = ttk.Label(header, text="S3 / MinIO Manager", style="LoginTitle.TLabel", anchor="w")
+        self.title_lbl.grid(row=0, column=0, sticky="we")
+        # Removed moon toggle for a cleaner header
+        header.bind("<Configure>", lambda e: self._set_title_wrap(e.width))
+
+        self.subtitle_lbl = ttk.Label(form, text="", style="LoginSubtitle.TLabel")
+        self.subtitle_lbl.grid(row=1, column=0, sticky="w", pady=(12, 18))
+
+        self.welcome_lbl = ttk.Label(form, text="👋 Welcome back, operator", style="LoginWelcome.TLabel")
+        self.welcome_lbl.grid(row=2, column=0, sticky="w", pady=(0, 22))
+
+        ttk.Label(form, text="Username", style="LoginLabel.TLabel").grid(row=3, column=0, sticky="w")
+        self.username_var = tk.StringVar()
+        user_field = RoundedField(form, textvariable=self.username_var, height=44, always_glow=True)
+        user_field.grid(row=4, column=0, sticky="we", pady=(8, 22))
+        self.username_entry = user_field.entry
+        self.username_status = ttk.Label(user_field.trailing_holder, text="", style="LoginCheckIcon.TLabel")
+        self.username_status.pack(side="right")
+
+        ttk.Label(form, text="Password", style="LoginLabel.TLabel").grid(row=5, column=0, sticky="w")
+        self.password_var = tk.StringVar()
+        pass_field = RoundedField(form, textvariable=self.password_var, show="•", height=44, always_glow=True)
+        pass_field.grid(row=6, column=0, sticky="we", pady=(8, 10))
+        self.password_entry = pass_field.entry
+        # Remove show/hide toggle for password for a cleaner design
+
+        self.confirm_label = ttk.Label(form, text="Confirm Password", style="LoginLabel.TLabel")
+        self.confirm_var = tk.StringVar()
+        confirm_field = RoundedField(form, textvariable=self.confirm_var, show="•", height=44, always_glow=True)
+        self.confirm_entry = confirm_field.entry
+        self.confirm_toggle = ttk.Label(confirm_field.trailing_holder, text="Show", style="LoginLink.TLabel", anchor="center", padding=(0,0,0,0))
+        self.confirm_toggle.bind("<Button-1>", lambda *_: self._toggle_confirm_visibility())
+        confirm_field.place_right(self.confirm_toggle)
+        self.confirm_row = confirm_field
+
+        # Premium multi‑color strength bar (thin, gradient‑like)
+        self.strength_canvas = tk.Canvas(
+            form,
+            height=10,
+            highlightthickness=0,
+            bd=0,
+            background=THEME_PALETTE.get("SURFACE", "#111318"),
+        )
+        self.strength_canvas.grid(row=9, column=0, sticky="we", pady=(8, 12))
+
+        self.message_var = tk.StringVar()
+        self.message_label = ttk.Label(form, textvariable=self.message_var, style="LoginMessage.TLabel")
+        self.message_label.grid(row=10, column=0, sticky="we", pady=(2, 0))
+
+        buttons = ttk.Frame(form, style="LoginInner.TFrame")
+        buttons.grid(row=12, column=0, sticky="we", pady=(12, 12))
+        buttons.columnconfigure(0, weight=1)
+        buttons.columnconfigure(1, weight=0)
+
+        # Keep me signed in
+        self.keep_signed_var = tk.BooleanVar(value=True)
+        keep_row = ttk.Frame(form, style="LoginInner.TFrame")
+        keep_row.grid(row=11, column=0, sticky="w", pady=(6, 0))
+        ttk.Checkbutton(keep_row, text="Keep me signed in", variable=self.keep_signed_var, style="Section.TCheckbutton").pack(side="left")
+
+        self.primary_btn = ttk.Button(buttons, text="Sign In ✓", style="PrimaryLarge.TButton", command=self._submit)
+        self.primary_btn.grid(row=0, column=0, sticky="we")
+
+        self.quit_btn = ttk.Button(buttons, text="Quit", style="GhostSmall.TButton", command=self.on_cancel)
+        self.quit_btn.grid(row=0, column=1, sticky="e", padx=(14, 0))
+
+        self.toggle_btn = ttk.Label(form, text="", style="LoginLink.TLabel", cursor="hand2")
+        self.toggle_btn.grid(row=13, column=0, sticky="w", pady=(8, 0))
+        self.toggle_btn.bind("<Button-1>", lambda *_: self._toggle_mode())
+
+        self.footnote_var = tk.StringVar()
+        ttk.Label(form, textvariable=self.footnote_var, style="LoginFootnote.TLabel").grid(row=14, column=0, sticky="w", pady=(10, 0))
+
+        self.bind_all("<Return>", lambda *_: self._submit())
+        self.bind_all("<Escape>", lambda *_: self.on_cancel())
+
+        self._refresh_usernames()
+        self._update_mode()
+        self.after(100, self.username_entry.focus_set)
+        self.username_var.trace_add("write", lambda *_: self._on_username_change())
+        self.password_var.trace_add("write", lambda *_: self._on_password_change())
+
+    def _refresh_usernames(self):
+        # Do not auto‑fill usernames; keep the field empty for privacy
+        if self.mode == "register":
+            self.username_var.set("")
+
+    def _update_mode(self):
+        if self.mode == "login":
+            self.toggle_btn.config(text="Need access? Create an account →")
+            try:
+                self.primary_btn.configure(text="Sign In ✓")
+            except Exception:
+                pass
+            if self.confirm_label.winfo_manager():
+                self.confirm_label.grid_remove()
+            if self.confirm_row.winfo_manager():
+                self.confirm_row.grid_remove()
+            self.subtitle_lbl.config(text="Sign in with your workspace credentials to continue.")
+            self.footnote_var.set("Having trouble? Ask an administrator to reset your local credentials.")
+        else:
+            self.toggle_btn.config(text="Back to sign in ↩")
+            try:
+                self.primary_btn.configure(text="Register & Sign In")
+            except Exception:
+                pass
+            self.confirm_label.grid(row=7, column=0, sticky="w", pady=(8, 0))
+            self.confirm_row.grid(row=8, column=0, sticky="we", pady=(8, 14))
+            self.subtitle_lbl.config(text="Create a secure account.")
+            self.footnote_var.set("Passwords must be at least 8 characters. We hash them locally with PBKDF2 before storing.")
+        self.message_var.set("")
+        self._update_hero()
+        self._on_username_change()
+        self._on_password_change()
+
+    def _toggle_mode(self):
+        self.mode = "register" if self.mode == "login" else "login"
+        self.password_var.set("")
+        self.confirm_var.set("")
+        if self._password_visible:
+            self._password_visible = False
+            self.password_entry.config(show="•")
+            self.password_toggle.config(text="Show")
+        if self._confirm_visible:
+            self._confirm_visible = False
+            self.confirm_entry.config(show="•")
+            self.confirm_toggle.config(text="Show")
+        self._refresh_usernames()
+        self._update_mode()
+        self.after(50, self.username_entry.focus_set)
+
+    def _on_hero_resize(self, event):
+        # Redraw the background and reflow the canvas text
+        self._draw_hero_gradient()
+        self._paint_hero_text()
+
+    def _draw_hero_gradient(self):
+        canvas = getattr(self, "hero_canvas", None)
+        if not canvas:
+            return
+
+        # Clear previous background layer
+        canvas.delete("hero_bg")
+
+        # Canvas should blend with the card surface
+        try:
+            canvas.configure(background=THEME_PALETTE.get("SURFACE", "#1b1d22"),
+                             highlightthickness=0, bd=0)
+        except Exception:
+            pass
+
+        # Current canvas size
+        w = max(canvas.winfo_width(), 1)
+        h = max(canvas.winfo_height(), 1)
+
+        # Geometry
+        r = 18                  # corner radius
+        pad = 18                # inset for the gradient panel
+        spread = 6              # shadow spread in px (how far the halo extends)
+
+        # Slight extra padding around the canvas so shadow can breathe
+        try:
+            canvas.configure(scrollregion=(-spread, -spread, w + spread, h + spread))
+        except Exception:
+            pass
+
+        bg = THEME_PALETTE.get("BG", "#141518")
+        surface = THEME_PALETTE.get("SURFACE", "#1b1d22")
+        accent = THEME_PALETTE.get("ACCENT", "#4c8df6")
+
+        # Helper: draw a rounded-rectangle "stroke" (outline only)
+        def round_stroke(x1, y1, x2, y2, rad, color, width=2):
+            rad = max(0, min(rad, int((x2 - x1) / 2), int((y2 - y1) / 2)))
+            # Corners
+            canvas.create_arc(x1, y1, x1 + 2*rad, y1 + 2*rad, start=90, extent=90,
+                              style='arc', outline=color, width=width, tags="hero_bg")
+            canvas.create_arc(x2 - 2*rad, y1, x2, y1 + 2*rad, start=0, extent=90,
+                              style='arc', outline=color, width=width, tags="hero_bg")
+            canvas.create_arc(x1, y2 - 2*rad, x1 + 2*rad, y2, start=180, extent=90,
+                              style='arc', outline=color, width=width, tags="hero_bg")
+            canvas.create_arc(x2 - 2*rad, y2 - 2*rad, x2, y2, start=270, extent=90,
+                              style='arc', outline=color, width=width, tags="hero_bg")
+            # Edges
+            canvas.create_line(x1 + rad, y1, x2 - rad, y1, fill=color, width=width, tags="hero_bg")
+            canvas.create_line(x1 + rad, y2, x2 - rad, y2, fill=color, width=width, tags="hero_bg")
+            canvas.create_line(x1, y1 + rad, x1, y2 - rad, fill=color, width=width, tags="hero_bg")
+            canvas.create_line(x2, y1 + rad, x2, y2 - rad, fill=color, width=width, tags="hero_bg")
+
+        # --- Soft shadow / halo (drawn first, behind the gradient) ---
+        shadow_steps = 0  # disable halo to remove dark seam between panel and background
+        for i in range(shadow_steps):
+            # expand outward each step
+            inflate = spread - i
+            x1 = pad - inflate
+            y1 = pad - inflate
+            x2 = w - pad + inflate
+            y2 = h - pad + inflate
+            t = i / max(1, (shadow_steps - 1))
+            # darker near panel, lighter outward toward the BG
+            col = _blend(bg, "#000000", 0.22 * (1.0 - t))
+            round_stroke(x1, y1, x2, y2, r + inflate, col, width=2)
+
+        # --- Gradient fill panel (rounded-rect clipped) ---
+        # Premium vertical blue gradient fully filled, but clipped to a
+        # rounded-rectangle silhouette by narrowing each horizontal band
+        # near the top/bottom corners.
+        top_blue = "#4c8df6"
+        mid_blue = "#3d6fe3"
+        bot_blue = "#1f3fb5"
+
+        gx1, gy1, gx2, gy2 = pad, pad, w - pad, h - pad
+        steps = max(96, (gy2 - gy1))
+
+        def _corner_inset(y):
+            """Return x inset for a given y so the band fits in a rounded rect.
+            We compute the inset needed for the top-left/top-right and
+            bottom-left/bottom-right arcs and take the larger.
+            """
+            inset = 0.0
+            # distance from top edge inside the corner region
+            if y < gy1 + r:
+                dy = r - (y - gy1)
+                inset = max(inset, r - math.sqrt(max(r * r - dy * dy, 0.0)))
+            # distance from bottom edge inside the corner region
+            if y > gy2 - r:
+                dy = r - (gy2 - y)
+                inset = max(inset, r - math.sqrt(max(r * r - dy * dy, 0.0)))
+            return inset
+
+        for i in range(steps):
+            t = i / (steps - 1)
+            c1 = _blend(top_blue, mid_blue, min(1.0, t * 1.4))
+            col = _blend(c1, bot_blue, max(0.0, t - 0.35) / 0.65)
+            y = gy1 + i * (gy2 - gy1) / steps
+            y1 = int(y)
+            y2 = int(gy1 + (i + 1) * (gy2 - gy1) / steps)
+            inset = _corner_inset((y1 + y2) / 2.0)
+            x1 = int(gx1 + inset)
+            x2 = int(gx2 - inset)
+            # draw the band as a simple rect between the clipped x bounds
+            canvas.create_rectangle(x1, y1, x2, y2, fill=col, outline=col, tags="hero_bg")
+
+        # Optional: a very subtle split border to give depth without a hairline
+        if False:  # border disabled to avoid visible dark outline
+            light = _blend(accent, "#ffffff", 0.25)
+            dark = _blend(accent, "#000000", 0.10)
+            # top & left (light)
+            canvas.create_line(gx1 + r, gy1, gx2 - r, gy1, fill=light, width=1, tags="hero_bg")
+            canvas.create_line(gx1, gy1 + r, gx1, gy2 - r, fill=light, width=1, tags="hero_bg")
+            # bottom & right (slightly darker)
+            canvas.create_line(gx1 + r, gy2, gx2 - r, gy2, fill=dark, width=1, tags="hero_bg")
+            canvas.create_line(gx2, gy1 + r, gx2, gy2 - r, fill=dark, width=1, tags="hero_bg")
+
+        # Ensure background is behind the text/content
+        canvas.tag_lower("hero_bg")
+        self._paint_hero_text()
+
+    def _paint_hero_text(self):
+        """Lay out hero copy directly on the canvas so the gradient fill stays visible."""
+        c = self.hero_canvas
+        if not c:
+            return
+        c.delete("hero_text")
+
+        pad = 28
+        w = max(c.winfo_width(), 1)
+        # Badge
+        badge_bg = _blend(THEME_PALETTE.get("ACCENT", "#4c8df6"), "#ffffff", 0.18)
+        badge_fg = _blend(THEME_PALETTE.get("ACCENT", "#4c8df6"), "#000000", 0.15)
+        # Draw a small rounded pill for the badge
+        bx1, by1, bx2, by2, br = pad, pad, min(w - pad, pad + 160), pad + 32, 12
+        c.create_rectangle(bx1+br, by1, bx2-br, by2, fill=badge_bg, outline="", tags="hero_text")
+        c.create_arc(bx1, by1, bx1+2*br, by2, start=90, extent=180, style="pieslice", fill=badge_bg, outline="", tags="hero_text")
+        c.create_arc(bx2-2*br, by1, bx2, by2, start=270, extent=180, style="pieslice", fill=badge_bg, outline="", tags="hero_text")
+        c.create_text(bx1+14, by1+16, anchor="w", text="S3 / MINIO OPS", fill="#f5f7ff",
+                      font=("SF Pro Text", 10, "bold"), tags="hero_text")
+
+        # Title
+        title_y = by2 + 28
+        self._hero_title_id = c.create_text(
+            pad, title_y, anchor="nw", width=w - pad*2,
+            text=self._hero_title_text, fill=THEME_PALETTE.get("TEXT", "#e6ebf3"),
+            font=("SF Pro Display", 36, "bold"), tags="hero_text"
+        )
+
+        # Summary
+        sum_y = c.bbox(self._hero_title_id)[3] + 18 if self._hero_title_id else title_y + 60
+        self._hero_summary_id = c.create_text(
+            pad, sum_y, anchor="nw", width=w - pad*2,
+            text=self._hero_summary_text,
+            fill=_blend(THEME_PALETTE.get("SUBTLE", "#9aa3b2"), THEME_PALETTE.get("TEXT", "#e6ebf3"), 0.45),
+            font=("SF Pro Text", 12), tags="hero_text"
+        )
+
+        # Bullets
+        y = c.bbox(self._hero_summary_id)[3] + 16 if self._hero_summary_id else sum_y + 40
+        self._hero_point_ids = []
+        for i, line in enumerate(self._hero_points_text):
+            item = c.create_text(
+                pad, y, anchor="nw", width=w - pad*2,
+                text=f"• {line}",
+                fill=_blend(THEME_PALETTE.get("SUBTLE", "#9aa3b2"), THEME_PALETTE.get("TEXT", "#e6ebf3"), 0.55),
+                font=("SF Pro Text", 12), tags="hero_text"
+            )
+            self._hero_point_ids.append(item)
+            y = c.bbox(item)[3] + 10
+
+        # Footer
+        self._hero_footer_id = c.create_text(
+            pad, y + 18, anchor="nw", width=w - pad*2,
+            text=self._hero_footer_text,
+            fill=_blend(THEME_PALETTE.get("SUBTLE", "#9aa3b2"), THEME_PALETTE.get("TEXT", "#e6ebf3"), 0.65),
+            font=("SF Pro Text", 11), tags="hero_text"
+        )
+
+    @staticmethod
+    def _hex_to_rgb(value):
+        value = value.lstrip("#")
+        return tuple(int(value[i:i+2], 16) for i in (0, 2, 4))
+
+    def _set_title_wrap(self, width):
+        try:
+            # Reserve space for the moon toggle and some padding
+            wrap = max(360, int(width) - 120)
+            self.title_lbl.config(wraplength=wrap)
+            # Responsive title sizing: slightly shrink on tighter widths
+            try:
+                style = ttk.Style(self)
+                size = 40 if width > 760 else (38 if width > 680 else (36 if width > 600 else 32))
+                style.configure("LoginTitle.TLabel", font=("SF Pro Display", size, "bold"))
+            except Exception:
+                pass
+        except Exception:
+            pass
+
+    def _toggle_theme(self):
+        global _initial_settings
+        # Flip preference
+        current_dark = str(os.environ.get("UI_DARK", _initial_settings.get("UI_DARK", "1"))).lower() not in ("0", "false", "no")
+        new_dark = not current_dark
+        os.environ["UI_DARK"] = "1" if new_dark else "0"
+        # Persist to the same settings JSON used by s3.py
+        try:
+            cfg = load_s3_settings()
+            cfg["UI_DARK"] = "1" if new_dark else "0"
+            save_s3_settings(cfg)
+            _initial_settings = cfg
+        except Exception:
+            pass
+        # Re-apply theme styles; widgets reuse the same style names
+        try:
+            _, palette = apply_theme(self.winfo_toplevel())
+            THEME_PALETTE.clear(); THEME_PALETTE.update(palette)
+        except Exception:
+            pass
+        # Redraw elements that paint directly
+        try:
+            self._draw_hero_gradient()
+            self._on_password_change()
+        except Exception:
+            pass
+
+    def _update_hero(self):
+        if self.mode == "login":
+            self._hero_title_text = "Welcome back.\nReady to deploy?"
+            self._hero_summary_text = "Manage S3/MinIO from one desktop — no shell needed."
+            self._hero_points_text = [
+                "Upload files and folders with resumable progress.",
+                "Download objects with auto‑retry and metrics.",
+                "List buckets & objects; filter and inspect metadata.",
+                "Delete objects or entire buckets with safety checks.",
+            ]
+            self._hero_footer_text = "Configure endpoints, credentials, and defaults in Settings."
+        else:
+            self._hero_title_text = "Welcome.\nReady to deploy?"
+            self._hero_summary_text = "Create an account to begin. Then manage S3/MinIO from one desktop — no shell needed."
+            self._hero_points_text = [
+                "Upload files and folders with resumable progress.",
+                "Download objects with auto‑retry and metrics.",
+                "List buckets & objects; filter and inspect metadata.",
+                "Delete objects or entire buckets with safety checks.",
+            ]
+            self._hero_footer_text = "Configure endpoints, credentials, and defaults in Settings."
+        # Repaint texts onto the canvas
+        self._paint_hero_text()
+
+    def _on_username_change(self):
+        # Keep messaging generic; do not display the typed username
+        if self.mode == "login":
+            self.welcome_lbl.config(text="👋 Welcome back")
+        else:
+            self.welcome_lbl.config(text="🛡️ Create your account")
+        username = self.username_var.get().strip()
+        self.username_status.config(text="✓" if username else "")
+
+    def _password_strength_score(self, password):
+        score = 0
+        if not password:
+            return 0
+        length = len(password)
+        score += min(length * 6, 40)
+        if re.search(r"[A-Z]", password):
+            score += 15
+        if re.search(r"[a-z]", password):
+            score += 15
+        if re.search(r"\d", password):
+            score += 15
+        if re.search(r"[^\w\s]", password):
+            score += 15
+        if length >= 12:
+            score += 10
+        return min(score, 100)
+
+    def _on_password_change(self):
+        score = self._password_strength_score(self.password_var.get())
+        # update the premium multi‑segment bar
+        try:
+            self._draw_strength(score)
+        except Exception:
+            pass
+
+    def _draw_strength(self, score):
+        canvas = getattr(self, "strength_canvas", None)
+        if not canvas:
+            return
+        canvas.delete("all")
+        w = max(canvas.winfo_width(), 1)
+        h = max(canvas.winfo_height(), 8)
+        trough = THEME_PALETTE.get("SECTION_BG", "#22262e")
+        # background trough
+        canvas.create_rectangle(0, h//2 - 3, w, h//2 + 3, fill=trough, width=0)
+        # draw three segments from orange -> lime -> green
+        colors = ["#f59e0b", "#a3e635", "#22c55e"]
+        segs = [0.33, 0.66, 1.0]
+        filled = (score / 100.0) * w
+        start_x = 0
+        for idx, stop in enumerate(segs):
+            end_x = w * stop
+            draw_to = min(filled, end_x)
+            if draw_to > start_x:
+                canvas.create_rectangle(start_x, h//2 - 3, draw_to, h//2 + 3, fill=colors[idx], width=0)
+            start_x = end_x
+
+    def _toggle_password_visibility(self):
+        self._password_visible = not self._password_visible
+        if self._password_visible:
+            self.password_entry.config(show="")
+            self.password_toggle.config(text="Hide")
+        else:
+            self.password_entry.config(show="•")
+            self.password_toggle.config(text="Show")
+
+    def _toggle_confirm_visibility(self):
+        self._confirm_visible = not self._confirm_visible
+        if self._confirm_visible:
+            self.confirm_entry.config(show="")
+            self.confirm_toggle.config(text="Hide")
+        else:
+            self.confirm_entry.config(show="•")
+            self.confirm_toggle.config(text="Show")
+
+    def _submit(self):
+        username = self.username_var.get().strip().lower()
+        password = self.password_var.get()
+        if self.mode == "login":
+            if not username or not password:
+                self.message_var.set("Enter both username and password.")
+                self._shake()
+                return
+            user_id = auth_verify_user(username, password)
+            if user_id is None:
+                self.message_var.set("Invalid username or password.")
+                self._shake()
+                return
+            self._success_pulse(lambda: self._finalize(user_id, username))
+        else:
+            confirm = self.confirm_var.get()
+            if len(username) < 3:
+                self.message_var.set("Username must be at least 3 characters.")
+                return
+            if not username.replace("_", "").isalnum():
+                self.message_var.set("Use letters, numbers, and underscores only.")
+                return
+            if len(password) < 8:
+                self.message_var.set("Password must be at least 8 characters.")
+                return
+            if password != confirm:
+                self.message_var.set("Passwords do not match.")
+                return
+            if auth_get_user(username):
+                self.message_var.set("Username already exists. Choose another.")
+                return
+            auth_create_user(username, password)
+            user_id = auth_verify_user(username, password)
+            if user_id is None:
+                self.message_var.set("Unexpected error during registration.")
+                return
+            messagebox.showinfo("Account created", "Your account has been created.", parent=self)
+            self._success_pulse(lambda: self._finalize(user_id, username))
+
+    def _finalize(self, user_id, username):
+        self.unbind_all("<Return>")
+        self.unbind_all("<Escape>")
+        # Save session if requested
+        try:
+            cfg = load_s3_settings()
+            keep = getattr(self, "keep_signed_var", None)
+            if keep is not None and keep.get():
+                token = secrets.token_hex(16)
+                import datetime as _dt
+                expires = (_dt.datetime.now() + _dt.timedelta(days=7)).isoformat()
+                cfg["SESSION"] = {"username": username, "token": token, "expires_at": expires}
+            else:
+                cfg.pop("SESSION", None)
+            save_s3_settings(cfg)
+        except Exception:
+            pass
+        self.on_success(user_id, username)
+
+    def _shake(self):
+        try:
+            win = self.winfo_toplevel()
+            win.update_idletasks()
+            geom = win.geometry()
+            base = geom.split("+")
+            if len(base) >= 3:
+                size = base[0]
+                x = int(base[1]); y = int(base[2])
+                for dx in (10, -10, 8, -8, 6, -6, 4, -4, 2, -2, 0):
+                    win.geometry(f"{size}+{x+dx}+{y}")
+                    win.update_idletasks()
+                    win.after(12)
+        except Exception:
+            pass
+
+    def _success_pulse(self, on_done, steps=10, duration_ms=300):
+        """Quick success pulse on primary button; safe for both ttk and custom rounded button."""
+        # If using custom rounded button, just flash hover state briefly
+        try:
+            from tkinter import Canvas as _TkCanvas
+            if isinstance(self.primary_btn, RoundedButton) or isinstance(self.primary_btn, _TkCanvas):
+                try:
+                    self.primary_btn._set_hover(True)
+                except Exception:
+                    pass
+                self.after(max(120, duration_ms // 2), lambda: (setattr(self.primary_btn, "_hover", False), self.primary_btn._redraw(), on_done()))
+                return
+        except Exception:
+            pass
+
+        try:
+            style = ttk.Style(self)
+            base = THEME_PALETTE.get("ACCENT", "#4c8df6")
+            success = "#3ddc84"
+            pulse_style = "AccentPulse.TButton"
+            # inherit font if available
+            font_val = style.lookup("Accent.TButton", "font") or ("Arial", 12, "bold")
+            style.configure(pulse_style, padding=(15,12), font=font_val, background=base, foreground="white", borderwidth=0)
+            self.primary_btn.configure(style=pulse_style)
+
+            total_steps = max(2, int(steps)); delay = max(12, int(duration_ms / total_steps))
+            def hex_to_rgb(h):
+                h = h.lstrip('#'); return (int(h[0:2],16), int(h[2:4],16), int(h[4:6],16))
+            def rgb_to_hex(r,g,b):
+                return f"#{r:02x}{g:02x}{b:02x}"
+            r1,g1,b1 = hex_to_rgb(base); r2,g2,b2 = hex_to_rgb(success)
+
+            def frame(i=0, forward=True):
+                t = i / (total_steps-1)
+                r = int(r1 + (r2 - r1) * t); g = int(g1 + (g2 - g1) * t); b = int(b1 + (b2 - b1) * t)
+                style.configure(pulse_style, background=rgb_to_hex(r,g,b))
+                if forward and i < total_steps-1:
+                    self.after(delay, lambda: frame(i+1, True))
+                elif forward:
+                    self.after(delay//2, lambda: frame(total_steps-2, False))
+                elif i > 0:
+                    self.after(delay//2, lambda: frame(i-1, False))
+                else:
+                    try:
+                        self.primary_btn.configure(style="Accent.TButton")
+                    except Exception:
+                        pass
+                    on_done()
+
+            # Disable inputs briefly during pulse
+            try:
+                self.primary_btn.configure(state="disabled")
+                self.username_entry.configure(state="disabled")
+                self.password_entry.configure(state="disabled")
+                if self.mode != "login":
+                    self.confirm_entry.configure(state="disabled")
+            except Exception:
+                pass
+            frame(0, True)
+        except Exception:
+            on_done()
+
+
+def _start_login(root, card_factory):
+    result = {"done": False}
+
+    # Helper: lightweight fade-in for auto-login
+    def _fade_in(win, duration_ms=240, steps=12):
+        try:
+            win.attributes("-alpha", 0.0)
+        except Exception:
+            return
+        step = 1.0 / max(1, int(steps))
+        delay = max(8, int(duration_ms / max(1, int(steps))))
+
+        def tick(alpha=0.0):
+            try:
+                win.attributes("-alpha", max(0.0, min(1.0, alpha)))
+            except Exception:
+                return
+            if alpha < 1.0:
+                win.after(delay, lambda: tick(alpha + step))
+        win.after(delay, tick)
+
+    # Fast-path: auto login via session before creating overlays
+    try:
+        cfg = load_s3_settings()
+        sess = (cfg or {}).get("SESSION") or {}
+        username = sess.get("username")
+        exp = sess.get("expires_at")
+        if username and exp:
+            dt = datetime.datetime.fromisoformat(exp)
+            if dt > datetime.datetime.now():
+                row = auth_get_user(username)
+                if row:
+                    CURRENT_USER["id"] = row[0]
+                    CURRENT_USER["username"] = username
+                    # Subtle fade-in once the main UI starts
+                    _fade_in(root)
+                    return True
+    except Exception:
+        pass
+
+    login_background = ttk.Frame(root, style="LoginBackground.TFrame")
+    login_background.pack(fill="both", expand=True)
+
+    card_frame = card_factory(login_background)
+    # Center using place so we can resize responsively
+    card_frame.place(relx=0.5, rely=0.5, anchor="center")
+    card_frame.pack_propagate(False)
+    card_inner = getattr(card_frame, "_card_inner", card_frame)
+    card_inner.pack_propagate(False)
+
+    def _resize_login_card(event=None):
+        try:
+            login_background.update_idletasks()
+            sw = max(login_background.winfo_width(), root.winfo_screenwidth())
+            sh = max(login_background.winfo_height(), root.winfo_screenheight())
+        except Exception:
+            sw = root.winfo_screenwidth(); sh = root.winfo_screenheight()
+        margin = 56
+        avail_w = max(600, sw - margin * 2)
+        avail_h = max(420, sh - margin * 2)
+        min_w, min_h = 860, 560
+        max_w, max_h = 1120, 820
+        width = max(min_w, min(max_w, int(avail_w * 0.82)))
+        height = max(min_h, min(max_h, int(avail_h * 0.8)))
+        try:
+            card_frame.configure(width=width, height=height)
+        except Exception:
+            pass
+        # keep it centered
+        try:
+            card_frame.place_configure(relx=0.5, rely=0.5, anchor="center")
+        except Exception:
+            pass
+
+    login_background.bind("<Configure>", _resize_login_card)
+    root.after(50, _resize_login_card)
+
+    def _success(user_id, username):
+        CURRENT_USER["id"] = user_id
+        CURRENT_USER["username"] = username
+        result["done"] = True
+        root.quit()
+
+    def _cancel():
+        result["done"] = False
+        root.quit()
+        root.destroy()
+        sys.exit(0)
+
+    # (Auto-login already handled above.)
+
+    login_frame = LoginFrame(card_inner, _success, _cancel)
+    login_frame.pack(fill="both", expand=True)
+    root.update_idletasks()
+    root.deiconify()
+    root.mainloop()
+    try:
+        login_background.destroy()
+    except Exception:
+        pass
+    return result["done"]
+
+def show_login_modal(parent, card_factory):
+    """Display the LoginFrame in a modal Toplevel and return True on success."""
+    result = {"ok": False}
+    win = tk.Toplevel(parent)
+    win.title("Sign in")
+    try:
+        win.transient(parent)
+        win.grab_set()
+    except Exception:
+        pass
+    container = card_factory(win)
+    container.pack(expand=True, padx=60, pady=60)
+    container.configure(width=900, height=520)
+    container.pack_propagate(False)
+
+    def _success(uid, uname):
+        CURRENT_USER["id"] = uid
+        CURRENT_USER["username"] = uname
+        result["ok"] = True
+        try:
+            win.destroy()
+        except Exception:
+            pass
+
+    def _cancel():
+        result["ok"] = False
+        try:
+            win.destroy()
+        except Exception:
+            pass
+
+    lf = LoginFrame(container, _success, _cancel)
+    lf.pack(fill="both", expand=True)
+    _center_window(win)
+    parent.wait_window(win)
+    return bool(result["ok"])
+
+def show_login_overlay(parent, card_factory):
+    """Render a full-window login overlay that blocks the underlying UI until success.
+    Cancel attempts prompt to quit the app instead of leaving the UI unlocked.
+    """
+    overlay = ttk.Frame(parent, style="LoginBackground.TFrame")
+    # Use place() so the overlay sits above existing packed widgets
+    overlay.place(x=0, y=0, relwidth=1, relheight=1)
+    try:
+        overlay.lift()
+        overlay.grab_set()
+        parent.update_idletasks()
+    except Exception:
+        pass
+    card_frame = card_factory(overlay)
+    card_frame.place(relx=0.5, rely=0.5, anchor="center")
+    card_frame.pack_propagate(False)
+    card_inner = getattr(card_frame, "_card_inner", card_frame)
+    card_inner.pack_propagate(False)
+
+    def _resize_overlay_card(event=None):
+        try:
+            overlay.update_idletasks()
+            sw = max(overlay.winfo_width(), parent.winfo_screenwidth())
+            sh = max(overlay.winfo_height(), parent.winfo_screenheight())
+        except Exception:
+            sw = parent.winfo_screenwidth(); sh = parent.winfo_screenheight()
+        margin = 56
+        avail_w = max(600, sw - margin * 2)
+        avail_h = max(420, sh - margin * 2)
+        min_w, min_h = 860, 560
+        max_w, max_h = 1120, 820
+        width = max(min_w, min(max_w, int(avail_w * 0.82)))
+        height = max(min_h, min(max_h, int(avail_h * 0.8)))
+        try:
+            card_frame.configure(width=width, height=height)
+            card_frame.place_configure(relx=0.5, rely=0.5, anchor="center")
+        except Exception:
+            pass
+
+    overlay.bind("<Configure>", _resize_overlay_card)
+    parent.after(50, _resize_overlay_card)
+
+    def _success(uid, uname):
+        CURRENT_USER["id"] = uid
+        CURRENT_USER["username"] = uname
+        try:
+            overlay.grab_release()
+        except Exception:
+            pass
+        try:
+            overlay.destroy()
+        except Exception:
+            pass
+        _refresh_header_info()
+
+    def _cancel():
+        if messagebox.askyesno("Quit", "Exit the application?", parent=parent):
+            try:
+                parent.destroy()
+            except Exception:
+                pass
+            sys.exit(0)
+        # Otherwise ignore cancel and keep the overlay
+
+    lf = LoginFrame(card_inner, _success, _cancel)
+    lf.pack(fill="both", expand=True)
+
+def _refresh_header_info():
+    env_bits = []
+    if os.environ.get("AWS_REGION"): env_bits.append(f"region: {os.environ.get('AWS_REGION')}")
+    if os.environ.get("AWS_S3_ENDPOINT"): env_bits.append(os.environ.get("AWS_S3_ENDPOINT"))
+    info_texts = []
+    if CURRENT_USER["username"]:
+        info_texts.append(f"user: {CURRENT_USER['username']}")
+    if env_bits:
+        info_texts.extend(env_bits)
+    try:
+        if HEADER_INFO_LABEL is not None:
+            HEADER_INFO_LABEL.config(text=" | ".join(info_texts))
+        statusbar.config(text="Ready")
+    except Exception:
+        pass
 # ---------------- Small helpers ----------------
 _BUCKET_RE = re.compile(r"^(?!-)[a-z0-9-]{3,63}(?<!-)$")
 def is_valid_bucket_name(name):
@@ -169,6 +1374,25 @@ def _truncate_middle(text, max_len=72):
     right = keep - left
     return text[:left] + "…" + text[-right:]
 
+
+def _center_window(win, fallback=(480, 320)):
+    try:
+        win.update_idletasks()
+        width = win.winfo_width()
+        height = win.winfo_height()
+        if width <= 1 or height <= 1:
+            width, height = fallback
+        screen_w = win.winfo_screenwidth()
+        screen_h = win.winfo_screenheight()
+        x = max((screen_w - width) // 2, 0)
+        y = max((screen_h - height) // 3, 0)
+        if width and height:
+            win.geometry(f"{int(width)}x{int(height)}+{x}+{y}")
+        else:
+            win.geometry(f"+{x}+{y}")
+    except Exception:
+        pass
+
 def _format_transfer_meta(kind, name, transferred, total, avg_Bps, elapsed_sec, note=None):
     display_name = _truncate_middle(name, 72)
     parts = [f"{kind}: {display_name}" if display_name else kind]
@@ -220,7 +1444,15 @@ def apply_theme(root):
     try: style.theme_use("clam")
     except tk.TclError: pass
 
-    dark = os.environ.get("UI_DARK", "1") not in ("0", "false", "False")
+    # Read persisted preference first, then environment
+    pref = None
+    try:
+        pref = str(_initial_settings.get("UI_DARK")) if isinstance(_initial_settings, dict) and "UI_DARK" in _initial_settings else None
+    except Exception:
+        pref = None
+    env_flag = os.environ.get("UI_DARK")
+    base = env_flag if env_flag is not None else (pref if pref is not None else "1")
+    dark = str(base).lower() not in ("0", "false", "no")
 
     def _blend_hex(color, target, ratio):
         """Return a hex color blended towards target by ratio (0-1)."""
@@ -233,12 +1465,14 @@ def apply_theme(root):
         return f"#{nr:02x}{ng:02x}{nb:02x}"
 
     if dark:
-        BG      = "#141518"; SURFACE = "#1b1d22"; RAISED  = "#22252b"
-        TEXT    = "#e9ecf1"; SUBTLE  = "#9aa2ad"; ACCENT  = "#4c8df6"
-        TEXTAREA_BG = "#101114"; STATUS_BG = "#1b1d22"
+        BG      = "#0f1115"; SURFACE = "#171a20"; RAISED  = "#1f232b"
+        TEXT    = "#eef1f7"; SUBTLE  = "#9aa3b2"; ACCENT  = "#5b8cfe"
+        TEXT = "#e6ebf3"
+        TEXTAREA_BG = "#0c0e12"; STATUS_BG = "#15181f"
     else:
-        BG      = "#f7f7fb"; SURFACE = "#ffffff"; RAISED  = "#ffffff"
-        TEXT    = "#1c2230"; SUBTLE  = "#5c6678"; ACCENT  = "#2d6ae3"
+        BG      = "#f6f7fb"; SURFACE = "#ffffff"; RAISED  = "#ffffff"
+        TEXT    = "#1a2130"; SUBTLE  = "#5b667a"; ACCENT  = "#3a6df0"
+        TEXTAREA_BG = "#ffffff"; STATUS_BG = "#eff2f9"
         TEXTAREA_BG = "#ffffff"; STATUS_BG = "#f4f6fb"
 
     available_fonts = set(tkfont.families(root))
@@ -261,10 +1495,14 @@ def apply_theme(root):
     FONT_SMALL = pick_font(TEXT_STACK, 10)
     FONT_SMALL_BOLD = pick_font(TEXT_STACK, 10, "bold")
     FONT_HEADER = pick_font(DISPLAY_STACK, 16, "bold")
+    FONT_HERO = pick_font(DISPLAY_STACK, 26, "bold")
+    FONT_BADGE = pick_font(TEXT_STACK, 9, "bold")
     FONT_PROGRESS = pick_font(TEXT_STACK, 11, "bold")
     FONT_ICON = pick_font(DISPLAY_STACK, 24, "bold")
     ACCENT_GLOW = _blend_hex(ACCENT, "#ffffff", 0.35)
     ACCENT_SHADOW = _blend_hex(ACCENT, "#000000", 0.25)
+    INPUT_BG = _blend_hex(SURFACE, BG, 0.22 if dark else 0.06)
+    INPUT_BG_FOCUS = _blend_hex(INPUT_BG, ACCENT, 0.35)
 
     root.configure(bg=BG)
     style.configure(".", background=BG, foreground=TEXT, fieldbackground=SURFACE, highlightthickness=0)
@@ -272,16 +1510,46 @@ def apply_theme(root):
     style.configure("Muted.TLabel", foreground=SUBTLE)
     style.configure("Header.TLabel", font=FONT_HEADER)
     style.configure("Small.TLabel", font=FONT_SMALL, foreground=SUBTLE)
-    style.configure("Card.TFrame", background=SURFACE, relief="flat")
+    style.configure(
+        "Card.TFrame",
+        background=SURFACE,
+        relief="flat",
+        bordercolor=_blend_hex(SURFACE, BG, 0.28),
+        borderwidth=1,
+        padding=(22, 22),
+    )
     style.configure("Toolbar.TFrame", background=BG)
     style.configure("TEntry", fieldbackground=RAISED, foreground=TEXT, insertcolor=TEXT, bordercolor=RAISED)
     style.map("TEntry", bordercolor=[("focus", ACCENT)])
-    style.configure("Accent.TButton", padding=(14,8), font=FONT_TEXT_BOLD,
-                    background=ACCENT, foreground="white")
-    style.map("Accent.TButton", background=[("active", ACCENT), ("disabled", "#6c7aa3")])
-    style.configure("Neutral.TButton", padding=(12,7), font=FONT_TEXT,
+    accent_idle = "#3a5aff"
+    accent_active = "#4e6cff"
+    style.configure("Accent.TButton", padding=(15,12), font=FONT_TEXT_BOLD,
+                    background=accent_idle, foreground="white", borderwidth=0)
+    style.map(
+        "Accent.TButton",
+        background=[("active", accent_active), ("disabled", _blend_hex(accent_idle, BG, 0.4))],
+        foreground=[("disabled", _blend_hex("#ffffff", BG, 0.4))]
+    )
+    ghost_bg = _blend_hex(SURFACE, BG, 0.18 if dark else 0.04)
+    ghost_bg_active = _blend_hex(ghost_bg, ACCENT, 0.18 if dark else 0.35)
+    style.configure("Ghost.TButton", padding=(12,10), font=FONT_TEXT,
+                    background=ghost_bg, foreground=TEXT, bordercolor=_blend_hex(ghost_bg, BG, 0.35), borderwidth=1)
+    style.map(
+        "Ghost.TButton",
+        background=[("active", ghost_bg_active)],
+        foreground=[("active", TEXT)],
+        bordercolor=[("active", _blend_hex(ghost_bg_active, ACCENT, 0.2))]
+    )
+    # Larger primary and smaller ghost variants for auth actions
+    style.configure("PrimaryLarge.TButton", padding=(20,14), font=pick_font(DISPLAY_STACK, 14, "bold"),
+                    background=accent_idle, foreground="white", borderwidth=0)
+    style.map("PrimaryLarge.TButton", background=[("active", accent_active)])
+    style.configure("GhostSmall.TButton", padding=(8,6), font=FONT_TEXT,
+                    background=ghost_bg, foreground=TEXT, bordercolor=_blend_hex(ghost_bg, BG, 0.35), borderwidth=1)
+    style.map("GhostSmall.TButton", background=[("active", ghost_bg_active)])
+    style.configure("Neutral.TButton", padding=(12,8), font=FONT_TEXT,
                     background=RAISED, foreground=TEXT)
-    style.map("Neutral.TButton", background=[("active", "#2a2d34"), ("disabled", "#2a2d34")])
+    style.map("Neutral.TButton", background=[("active", _blend_hex(RAISED, ACCENT, 0.12)), ("disabled", _blend_hex(RAISED, BG, 0.35))])
     style.configure("TNotebook", background=BG, borderwidth=0)
     style.configure("TNotebook.Tab", padding=(14,8), font=FONT_TEXT, background=BG)
     style.map("TNotebook.Tab", background=[("selected", SURFACE)], foreground=[("selected", TEXT)])
@@ -305,8 +1573,8 @@ def apply_theme(root):
         lightcolor=ACCENT_GLOW,
         darkcolor=ACCENT_SHADOW,
         borderwidth=0,
-        thickness=14,
-        relief="flat"
+        thickness=16,
+        relief="flat",
     )
     style.map(
         "Modern.Horizontal.TProgressbar",
@@ -463,10 +1731,126 @@ def apply_theme(root):
         "List.Treeview.Heading",
         background=[("active", SURFACE)]
     )
+    hero_top = _blend_hex(ACCENT, "#162a6a" if dark else "#ffffff", 0.28 if dark else 0.44)
+    hero_bottom = _blend_hex(ACCENT, "#3b60ff" if dark else "#b3c3ff", 0.64 if dark else 0.2)
+    hero_muted = _blend_hex("#f6f7fb" if dark else "#ffffff", hero_top, 0.42 if dark else 0.24)
+    badge_bg = _blend_hex(hero_top, "#ffffff", 0.18 if dark else 0.3)
+    badge_fg = "#f5f7ff" if dark else "#ffffff"
+    style.configure("LoginBackground.TFrame", background=BG)
+    style.configure("ElevatedCard.TFrame", background=SURFACE, padding=0)
+    style.configure("LoginCard.TFrame", background=SURFACE, padding=(0,0))
+    style.configure("LoginShell.TFrame", background=SURFACE, padding=0)
+    style.configure("LoginHero.TFrame", background=hero_top, padding=(42, 48))
+    # Make hero panel match input-field surface; the glow ring is painted on canvas
+    style.configure("LoginHero.TFrame", background=SURFACE, padding=(42, 48))
+    style.configure("LoginHeroContent.TFrame", background=SURFACE)
+
+    style.configure(
+        "LoginHeroHeading.TLabel",
+        background=SURFACE,
+        foreground=TEXT,
+        font=("SF Pro Display", 36, "bold"),
+        wraplength=320,
+        justify="left",
+    )
+    style.configure(
+        "LoginHeroText.TLabel",
+        background=SURFACE,
+        foreground=_blend_hex(SUBTLE, TEXT, 0.45),
+        font=FONT_SMALL,
+        wraplength=280,
+        justify="left",
+    )
+    style.configure(
+        "LoginHeroFootnote.TLabel",
+        background=SURFACE,
+        foreground=_blend_hex(SUBTLE, TEXT, 0.6),
+        font=FONT_SMALL,
+        wraplength=260,
+        justify="left",
+    )
+    style.configure("LoginHeroIcon.TLabel", background=SURFACE, foreground=TEXT, font=("Segoe UI Emoji", 20))
+    style.configure(
+        "LoginBadge.TLabel",
+        background=_blend_hex(SURFACE, ACCENT, 0.18 if dark else 0.28),
+        foreground=_blend_hex(ACCENT, "#ffffff", 0.15 if dark else 0.0),
+        font=FONT_BADGE,
+        padding=(14, 6),
+    )
+    # Slightly tighter top/bottom padding to fit footnotes
+    style.configure("LoginInner.TFrame", background=SURFACE, padding=(40, 64, 56, 40))
+    style.configure("LoginHeader.TFrame", background=SURFACE)
+    style.configure("LoginTitle.TLabel", background=SURFACE, foreground=TEXT, font=("SF Pro Display", 36, "bold"), wraplength=560, justify="left")
+    style.configure("LoginToggle.TLabel", background=_blend_hex(SURFACE, BG, 0.12 if dark else 0.04), foreground=_blend_hex(SUBTLE, "#ffffff", 0.1), font=FONT_ICON, padding=(10,8))
+    style.configure("LoginToggle.TLabel", relief="flat")
+    style.configure("LoginSubtitle.TLabel", background=SURFACE, foreground=_blend_hex(SUBTLE, TEXT, 0.45), font=FONT_SMALL, wraplength=380, justify="left")
+    style.configure("LoginWelcome.TLabel", background=SURFACE, foreground=_blend_hex(TEXT, SUBTLE, 0.15), font=FONT_TEXT)
+    style.configure("LoginLabel.TLabel", background=SURFACE, foreground=_blend_hex(TEXT, SUBTLE, 0.2), font=FONT_SMALL_BOLD)
+    style.configure("LoginCheckIcon.TLabel", background=SURFACE, foreground="#3ddc84", font=(DISPLAY_STACK[-1], 14, "bold"))
+    # Make error messages more legible and less cramped
+    style.configure("LoginMessage.TLabel", background=SURFACE, foreground="#ff6f73", font=FONT_SMALL,
+                    justify="left", wraplength=520)
+    style.configure("LoginLink.TLabel", background=SURFACE, foreground=ACCENT, font=FONT_SMALL_BOLD, cursor="hand2")
+    style.map("LoginLink.TLabel", foreground=[("active", ACCENT_GLOW)])
+    style.configure("LoginInput.TFrame", background=SURFACE, padding=(0,0))
+    style.configure(
+        "Login.TEntry",
+        fieldbackground=SURFACE,
+        background=SURFACE,
+        bordercolor=SURFACE,
+        lightcolor=SURFACE,
+        darkcolor=SURFACE,
+        relief="flat",
+        padding=10,
+        foreground=TEXT,
+        insertcolor=TEXT,
+    )
+    style.map(
+        "Login.TEntry",
+        fieldbackground=[("focus", SURFACE)],
+        bordercolor=[("focus", SURFACE)],
+        lightcolor=[("focus", SURFACE)],
+        darkcolor=[("focus", SURFACE)],
+    )
+    divider_bg = _blend_hex(SURFACE, hero_top, 0.24 if dark else 0.16)
+    style.configure("LoginCardDivider.TFrame", background=divider_bg, width=2)
+    # Footnote can be long; allow wider wrapping so it doesn't cut off
+    style.configure("LoginFootnote.TLabel", background=SURFACE, foreground=_blend_hex(SUBTLE, TEXT, 0.6), font=FONT_SMALL,
+                    wraplength=520, justify="left")
+    strength_trough = _blend_hex(SURFACE, BG, 0.3 if dark else 0.18)
+    style.configure(
+        "StrengthWeak.Horizontal.TProgressbar",
+        troughcolor=strength_trough,
+        bordercolor=strength_trough,
+        background="#ff6b6b",
+        lightcolor="#ffa8a8",
+        darkcolor="#d64545",
+        thickness=12
+    )
+    style.configure(
+        "StrengthMedium.Horizontal.TProgressbar",
+        troughcolor=strength_trough,
+        bordercolor=strength_trough,
+        background="#f7b731",
+        lightcolor="#ffd56b",
+        darkcolor="#c28b07",
+        thickness=12
+    )
+    style.configure(
+        "StrengthStrong.Horizontal.TProgressbar",
+        troughcolor=strength_trough,
+        bordercolor=strength_trough,
+        background="#3ddc84",
+        lightcolor="#8af7b8",
+        darkcolor="#25a05a",
+        thickness=12
+    )
 
     def card(parent):
-        outer = ttk.Frame(parent, style="Card.TFrame", padding=(16,16,16,16))
+        # Simple elevated frame without canvas outlines to avoid "grid" look
+        outer = ttk.Frame(parent, style="Card.TFrame", padding=(18,18,18,18))
         outer.grid_columnconfigure(0, weight=1)
+        outer._card_inner = outer
         return outer
     palette = {
         "dark": dark,
@@ -483,25 +1867,65 @@ def apply_theme(root):
         "DANGER": danger_base,
         "DANGER_BG": danger_bg,
         "SECTION_BG": section_bg,
+        "HERO_GRADIENT": (hero_top, hero_bottom),
+        "CARD_SHADOW": _blend_hex(BG, "#000000", 0.35 if dark else 0.2),
     }
     return card, palette
+
+_initial_settings = load_s3_settings()
 
 # ---------------- GUI root ----------------
 root = tk.Tk()
 root.title("S3 / MinIO Manager")
+root.geometry("1280x780")
+root.minsize(960, 600)
+_center_window(root)
 
 card, palette = apply_theme(root)
+THEME_PALETTE.clear()
+THEME_PALETTE.update(palette)
+
+if not _start_login(root, card):
+    sys.exit(0)
+
+root.update_idletasks()
 _set_initial_window_size(root)
+root.deiconify()
 
 # Header
 header = ttk.Frame(root, style="Toolbar.TFrame")
 header.pack(fill="x", padx=14, pady=(10,4))
 ttk.Label(header, text="S3 / MinIO Manager", style="Header.TLabel").pack(side="left")
+
+def _logout():
+    if not messagebox.askyesno("Log out", "Log out and return to sign-in?", parent=root):
+        return
+    # Clear persisted session and restart process cleanly
+    try:
+        cfg = load_s3_settings()
+        cfg.pop("SESSION", None)
+        save_s3_settings(cfg)
+    except Exception:
+        pass
+    try:
+        statusbar.config(text="Logging out…")
+    except Exception:
+        pass
+    # Transition to a full-overlay login inside the same window
+    show_login_overlay(root, card)
+
+ttk.Button(header, text="Logout", style="Ghost.TButton", command=_logout).pack(side="right", padx=(0,8))
 env_bits = []
 if os.environ.get("AWS_REGION"): env_bits.append(f"region: {os.environ.get('AWS_REGION')}")
 if os.environ.get("AWS_S3_ENDPOINT"): env_bits.append(os.environ.get("AWS_S3_ENDPOINT"))
+info_texts = []
+if CURRENT_USER["username"]:
+    info_texts.append(f"user: {CURRENT_USER['username']}")
 if env_bits:
-    ttk.Label(header, text=" | ".join(env_bits), style="Small.TLabel").pack(side="right")
+    info_texts.extend(env_bits)
+if info_texts:
+    HEADER_INFO_LABEL = ttk.Label(header, text=" | ".join(info_texts), style="Small.TLabel")
+    HEADER_INFO_LABEL.pack(side="right")
 
 notebook = ttk.Notebook(root)
 notebook.pack(fill="both", expand=True, padx=12, pady=(0,10))
@@ -512,9 +1936,6 @@ statusbar.pack(fill="x", padx=16, pady=(0,12))
 
 cancel_event = threading.Event()
 PADX = 10; PADY = 8
-
-_initial_settings = load_s3_settings()
-
 _layout_state = {"compact": False, "settings_compact": False}
 
 def _settings_bool(value, default=True):
@@ -1300,7 +2721,7 @@ s_form_section.pack(fill="x", pady=(0, PADY))
 s_divider = ttk.Separator(s_card, orient="horizontal")
 s_divider.pack(fill="x", padx=18, pady=(0,12))
 
-s_info_section = ttk.Frame(s_card, style="Info.TFrame", padding=(18,16))
+s_info_section = ttk.Frame(s_card, style="Info.TFrame", padding=(22,18))
 s_info_section.grid_columnconfigure(0, weight=1)
 s_info_title = ttk.Label(s_info_section, text="Configuration Status", style="InfoHeading.TLabel")
 s_display_path = _display_config_path()
@@ -1325,7 +2746,7 @@ s_info_hint.grid(row=2, column=0, sticky="we", pady=(0,8))
 s_info_message.grid(row=3, column=0, sticky="we")
 s_info_section.pack(fill="x", pady=(0, PADY))
 # Bottom spacer prevents the last line from being obscured on some window managers
-s_bottom_spacer = ttk.Frame(s_card, style="Section.TFrame", height=14)
+s_bottom_spacer = ttk.Frame(s_card, style="Section.TFrame", height=28)
 s_bottom_spacer.pack(fill="x", pady=(0, 6))
 
 for widget, background in (
