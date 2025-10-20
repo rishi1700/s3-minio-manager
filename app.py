@@ -360,6 +360,7 @@ class RoundedButton(tk.Canvas):
             self.command()
 
 
+
 class RoundedPill(tk.Canvas):
     def __init__(self, master, text="", radius=12, pad_x=12, pad_y=8, command=None):
         super().__init__(master, height=36, highlightthickness=0, bd=0, background=THEME_PALETTE.get("SURFACE", "#1b1d22"))
@@ -396,6 +397,109 @@ class RoundedPill(tk.Canvas):
     def _set_hover(self, v):
         self._hover = v
         self._redraw()
+
+
+# ---- Auto-upgrade entries in non-login tabs to RoundedField -----------------
+
+def _is_inside_login(widget):
+    try:
+        from tkinter import Misc
+        w = widget
+        # Walk up the parents until root
+        while isinstance(w, tk.Misc) and w is not None:
+            if isinstance(w, LoginFrame):
+                return True
+            w = w.master
+    except Exception:
+        pass
+    return False
+
+
+def _stringvar_from_entry(entry):
+    """Fetch existing textvariable from an Entry (if any) or mirror its content into a new StringVar."""
+    try:
+        name = str(entry.cget("textvariable") or "")
+        if name:
+            # Bind to the same underlying Tcl variable name
+            return tk.StringVar(master=entry, name=name)
+    except Exception:
+        pass
+    # Fall back to a new variable seeded with current text
+    try:
+        return tk.StringVar(value=entry.get())
+    except Exception:
+        return tk.StringVar()
+
+
+def _replace_entry_with_rounded(entry):
+    """Replace a tk/ttk Entry with a RoundedField in the same grid cell.
+    Skips anything inside the login/register frame.
+    """
+    try:
+        if _is_inside_login(entry):
+            return
+        if getattr(entry, "_rounded_applied", False):
+            return
+        info = entry.grid_info()
+        if not info:
+            # Only support grid-managed widgets for now
+            return
+        parent = entry.master
+        var = _stringvar_from_entry(entry)
+        show = ""
+        try:
+            show = entry.cget("show") or ""
+        except Exception:
+            show = ""
+        # Create the rounded field with persistent glow
+        rf = RoundedField(parent, textvariable=var, show=(show or None), height=44, always_glow=True)
+        # Match the original grid placement
+        rf.grid(row=int(info.get("row", 0)), column=int(info.get("column", 0)),
+                rowspan=int(info.get("rowspan", 1)), columnspan=int(info.get("columnspan", 1)),
+                sticky=info.get("sticky", "we"), padx=info.get("padx", 0), pady=info.get("pady", 0))
+        try:
+            # Expand horizontally by default
+            parent.grid_columnconfigure(int(info.get("column", 0)), weight=1)
+        except Exception:
+            pass
+        try:
+            # Keep original width hint if it was set
+            w = int(entry.cget("width"))
+            if w > 0:
+                rf.configure(width=w)
+        except Exception:
+            pass
+        # Mark the new entry to avoid future upgrades
+        rf.entry._rounded_applied = True
+        # Destroy original
+        try:
+            entry.destroy()
+        except Exception:
+            pass
+    except Exception:
+        pass
+
+
+def _upgrade_inputs_in(widget):
+    """Recursively traverse a container and replace plain Entries with RoundedField,
+    skipping anything under LoginFrame. Safe to call multiple times.
+    """
+    try:
+        for child in list(widget.winfo_children()):
+            # If this subtree is the login frame, skip entirely
+            if isinstance(child, LoginFrame):
+                continue
+            # Recurse first
+            _upgrade_inputs_in(child)
+            # Then check if child is an Entry
+            try:
+                import tkinter.ttk as _ttk
+                if isinstance(child, (tk.Entry, _ttk.Entry)):
+                    _replace_entry_with_rounded(child)
+            except Exception:
+                pass
+    except Exception:
+        pass
 
 
 class LoginFrame(ttk.Frame):
@@ -1927,8 +2031,24 @@ if info_texts:
     HEADER_INFO_LABEL = ttk.Label(header, text=" | ".join(info_texts), style="Small.TLabel")
     HEADER_INFO_LABEL.pack(side="right")
 
+
 notebook = ttk.Notebook(root)
 notebook.pack(fill="both", expand=True, padx=12, pady=(0,10))
+
+# --- Upgrade plain inputs in all tabs to RoundedField (excludes login/register) ---
+
+def _apply_rounded_to_current_tab(*_):
+    try:
+        sel = notebook.select()
+        if sel:
+            tab = notebook.nametowidget(sel)
+            _upgrade_inputs_in(tab)
+    except Exception:
+        pass
+
+# Run once after the UI settles and also on every tab change
+root.after(600, lambda: _upgrade_inputs_in(root))
+notebook.bind("<<NotebookTabChanged>>", _apply_rounded_to_current_tab)
 
 
 statusbar = ttk.Label(root, text="Ready", style="Small.TLabel", anchor="w")
