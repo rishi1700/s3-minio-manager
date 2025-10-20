@@ -1,0 +1,54 @@
+# 1) Create & activate venv
+py -3.12 -m venv .venv
+.\.venv\Scripts\Activate.ps1
+
+# 2) Install build dependencies
+python -m pip install --upgrade pip
+pip install pyinstaller minio urllib3 tqdm pillow
+
+# 3) Build the EXE
+pyinstaller --noconfirm --clean --windowed `
+  --name "S3_MinIO_Manager" `
+  --icon "app.ico" `
+  --add-data "s3.py;." `
+  --hidden-import minio `
+  --hidden-import urllib3 `
+  --hidden-import tqdm `
+  app.py
+
+Write-Host "`nBuild output:"
+Get-ChildItem dist -Recurse
+
+# 4) Sign all EXE/DLLs (requires your codesign.pfx + password)
+#    Place your PFX in the project root OR update the path below.
+$PfxPath = ".\codesign.pfx"
+$PfxPassword = Read-Host -AsSecureString "Enter PFX password"
+
+# Find signtool
+$signtool = "${env:ProgramFiles(x86)}\Windows Kits\10\bin\x64\signtool.exe"
+if (!(Test-Path $signtool)) {
+  $signtool = (Get-ChildItem "${env:ProgramFiles(x86)}\Windows Kits\10\bin" -Recurse -Filter signtool.exe | Select-Object -Last 1).FullName
+}
+if (!(Test-Path $signtool)) { throw "signtool.exe not found. Install Windows SDK or Visual Studio with Signing Tools." }
+
+# Sign all binaries under dist/
+$files = Get-ChildItem -Path "dist" -Include *.exe,*.dll -Recurse
+if ($files.Count -eq 0) { throw "No binaries found in dist to sign." }
+
+foreach ($f in $files) {
+  Write-Host "Signing $($f.FullName)"
+  & $signtool sign `
+    /fd SHA256 `
+    /f $PfxPath `
+    /p ([Runtime.InteropServices.Marshal]::PtrToStringAuto([Runtime.InteropServices.Marshal]::SecureStringToBSTR($PfxPassword))) `
+    /tr http://timestamp.digicert.com `
+    /td SHA256 `
+    "$($f.FullName)"
+}
+
+# 5) Verify signatures
+foreach ($f in $files) {
+  & $signtool verify /pa "$($f.FullName)"
+}
+
+Write-Host "`n✅ Done. Signed app at: dist\S3_MinIO_Manager\S3_MinIO_Manager.exe"
