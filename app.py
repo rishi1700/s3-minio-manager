@@ -710,11 +710,9 @@ class LoginFrame(ttk.Frame):
         header = ttk.Frame(form, style="LoginHeader.TFrame")
         header.grid(row=0, column=0, sticky="we")
         header.columnconfigure(0, weight=1)
-        self.title_lbl = ttk.Label(header, text="S3 / MinIO Manager", style="LoginTitle.TLabel", anchor="w")
+        self.title_lbl = ttk.Label(header, text="S3 / MinIO Manager", style="LoginTitle.TLabel", anchor="w", wraplength=0)
         self.title_lbl.grid(row=0, column=0, sticky="we")
         # Removed moon toggle for a cleaner header
-        header.bind("<Configure>", lambda e: self._set_title_wrap(e.width))
-
         self.subtitle_lbl = ttk.Label(form, text="", style="LoginSubtitle.TLabel")
         self.subtitle_lbl.grid(row=1, column=0, sticky="w", pady=(12, 18))
 
@@ -734,7 +732,9 @@ class LoginFrame(ttk.Frame):
         pass_field = RoundedField(form, textvariable=self.password_var, show="•", height=44, always_glow=True, max_width=INPUT_MAX_WIDTH)
         pass_field.grid(row=6, column=0, sticky="we", pady=(8, 10))
         self.password_entry = pass_field.entry
-        # Remove show/hide toggle for password for a cleaner design
+        self.password_toggle = ttk.Label(pass_field.trailing_holder, text="Show", style="LoginLink.TLabel", anchor="center", padding=(0,0,0,0))
+        self.password_toggle.bind("<Button-1>", lambda *_: self._toggle_password_visibility())
+        pass_field.place_right(self.password_toggle)
 
         self.confirm_label = ttk.Label(form, text="Confirm Password", style="LoginLabel.TLabel")
         self.confirm_var = tk.StringVar()
@@ -760,14 +760,14 @@ class LoginFrame(ttk.Frame):
         self.message_label.grid(row=10, column=0, sticky="we", pady=(2, 0))
 
         buttons = ttk.Frame(form, style="LoginInner.TFrame")
-        buttons.grid(row=12, column=0, sticky="we", pady=(12, 12))
+        buttons.grid(row=11, column=0, sticky="we", pady=(12, 12))
         buttons.columnconfigure(0, weight=1)
         buttons.columnconfigure(1, weight=0)
 
         # Keep me signed in
         self.keep_signed_var = tk.BooleanVar(value=True)
         keep_row = ttk.Frame(form, style="LoginInner.TFrame")
-        keep_row.grid(row=11, column=0, sticky="w", pady=(6, 0))
+        keep_row.grid(row=12, column=0, sticky="w", pady=(6, 0))
         ttk.Checkbutton(keep_row, text="Keep me signed in", variable=self.keep_signed_var, style="Section.TCheckbutton").pack(side="left")
 
         self.primary_btn = ttk.Button(buttons, text="Sign In ✓", style="PrimaryLarge.TButton", command=self._submit)
@@ -969,16 +969,7 @@ class LoginFrame(ttk.Frame):
 
     def _set_title_wrap(self, width):
         try:
-            # Reserve space for the moon toggle and some padding
-            wrap = max(360, int(width) - 120)
-            self.title_lbl.config(wraplength=wrap)
-            # Responsive title sizing: slightly shrink on tighter widths
-            try:
-                style = ttk.Style(self)
-                size = 40 if width > 760 else (38 if width > 680 else (36 if width > 600 else 32))
-                style.configure("LoginTitle.TLabel", font=("SF Pro Display", size, "bold"))
-            except Exception:
-                pass
+            self.title_lbl.config(wraplength=0)
         except Exception:
             pass
 
@@ -1274,7 +1265,8 @@ def create_topbar(parent, username, on_logout):
         inner,
         text="S3 / MinIO Manager",
         style="TopbarTitle.TLabel",
-        anchor="w"
+        anchor="w",
+        wraplength=0 
     )
     lbl_title.pack(side="left", padx=(16, 0))
 
@@ -2208,7 +2200,7 @@ def apply_theme(root):
     # Slightly tighter top/bottom padding to fit footnotes
     style.configure("LoginInner.TFrame", background=SURFACE, padding=(40, 64, 56, 40))
     style.configure("LoginHeader.TFrame", background=SURFACE)
-    style.configure("LoginTitle.TLabel", background=SURFACE, foreground=TEXT, font=("SF Pro Display", 36, "bold"), wraplength=560, justify="left")
+    style.configure("LoginTitle.TLabel", background=SURFACE, foreground=TEXT, font=("SF Pro Display", 36, "bold"), wraplength=0, justify="left")
     style.configure("LoginToggle.TLabel", background=_blend_hex(SURFACE, BG, 0.12 if dark else 0.04), foreground=_blend_hex(SUBTLE, "#ffffff", 0.1), font=FONT_ICON, padding=(10,8))
     style.configure("LoginToggle.TLabel", relief="flat")
     style.configure("LoginSubtitle.TLabel", background=SURFACE, foreground=_blend_hex(SUBTLE, TEXT, 0.45), font=FONT_SMALL, wraplength=380, justify="left")
