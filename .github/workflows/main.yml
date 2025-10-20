@@ -1,0 +1,85 @@
+name: Build & Sign Windows EXE
+on:
+  workflow_dispatch:
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: pwsh
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Create venv & install dependencies
+        run: |
+          python -m venv .venv
+          .\.venv\Scripts\Activate.ps1
+          python -m pip install --upgrade pip
+          pip install pyinstaller minio urllib3 tqdm pillow
+
+      - name: Build EXE with PyInstaller
+        run: |
+          .\.venv\Scripts\Activate.ps1
+          pyinstaller --noconfirm --clean --windowed `
+            --name "S3_MinIO_Manager" `
+            --icon "app.ico" `
+            --add-data "s3.py;." `
+            --hidden-import minio `
+            --hidden-import urllib3 `
+            --hidden-import tqdm `
+            app.py
+          Get-ChildItem dist -Recurse
+
+      - name: Recreate PFX from GitHub Secret
+        env:
+          WIN_CERT_PFX_BASE64: ${{ secrets.WIN_CERT_PFX_BASE64 }}
+        run: |
+          [IO.File]::WriteAllBytes("codesign.pfx",[Convert]::FromBase64String($env:WIN_CERT_PFX_BASE64))
+
+      - name: Sign EXE(s)
+        env:
+          WIN_CERT_PFX_PASSWORD: ${{ secrets.WIN_CERT_PFX_PASSWORD }}
+        run: |
+          $signtool = "${env:ProgramFiles(x86)}\Windows Kits\10\bin\x64\signtool.exe"
+          if (!(Test-Path $signtool)) {
+            $signtool = (Get-ChildItem "${env:ProgramFiles(x86)}\Windows Kits\10\bin" -Recurse -Filter signtool.exe | Select-Object -Last 1).FullName
+          }
+          if (!(Test-Path $signtool)) { throw "signtool.exe not found on Windows image." }
+
+          $files = Get-ChildItem -Path "dist" -Include *.exe,*.dll -Recurse
+          if ($files.Count -eq 0) { throw "No binaries to sign in /dist." }
+
+          foreach ($f in $files) {
+            & $signtool sign `
+              /fd SHA256 `
+              /f codesign.pfx `
+              /p $env:WIN_CERT_PFX_PASSWORD `
+              /tr http://timestamp.digicert.com `
+              /td SHA256 `
+              "$($f.FullName)"
+          }
+
+      - name: Verify signatures
+        run: |
+          $signtool = "${env:ProgramFiles(x86)}\Windows Kits\10\bin\x64\signtool.exe"
+          if (!(Test-Path $signtool)) {
+            $signtool = (Get-ChildItem "${env:ProgramFiles(x86)}\Windows Kits\10\bin" -Recurse -Filter signtool.exe | Select-Object -Last 1).FullName
+          }
+          $files = Get-ChildItem -Path "dist" -Include *.exe,*.dll -Recurse
+          foreach ($f in $files) {
+            & $signtool verify /pa "$($f.FullName)"
+          }
+
+      - name: Upload signed EXE artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: S3_MinIO_Manager-win
+          path: dist/S3_MinIO_Manager/**
