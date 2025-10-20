@@ -761,8 +761,8 @@ class LoginFrame(ttk.Frame):
 
         buttons = ttk.Frame(form, style="LoginInner.TFrame")
         buttons.grid(row=11, column=0, sticky="we", pady=(12, 12))
-        buttons.columnconfigure(0, weight=1)
-        buttons.columnconfigure(1, weight=0)
+        buttons.columnconfigure(0, weight=1, minsize=320)
+        buttons.columnconfigure(1, weight=0, minsize=120)
 
         # Keep me signed in
         self.keep_signed_var = tk.BooleanVar(value=True)
@@ -772,9 +772,19 @@ class LoginFrame(ttk.Frame):
 
         self.primary_btn = ttk.Button(buttons, text="Sign In ✓", style="PrimaryLarge.TButton", command=self._submit)
         self.primary_btn.grid(row=0, column=0, sticky="we")
+        try:
+            # Ensure enough width for longer label like "Register & Sign In" on Windows
+            self.primary_btn.configure(width=22)
+        except Exception:
+            pass
 
         self.quit_btn = ttk.Button(buttons, text="Quit", style="GhostSmall.TButton", command=self.on_cancel)
         self.quit_btn.grid(row=0, column=1, sticky="e", padx=(14, 0))
+        try:
+            # Prevent truncation of Quit text on Windows
+            self.quit_btn.configure(width=10)
+        except Exception:
+            pass
 
         self.toggle_btn = ttk.Label(form, text="", style="LoginLink.TLabel", cursor="hand2")
         self.toggle_btn.grid(row=13, column=0, sticky="w", pady=(8, 0))
