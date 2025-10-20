@@ -74,7 +74,40 @@ _initial_settings = load_s3_settings()
 THEME_PALETTE = {}
 HEADER_INFO_LABEL = None
 CURRENT_USER = {"id": None, "username": None}
+_UP_KEY_TOUCHED = False
+_UP_KEY_SET_PROGRAMMATICALLY = False
+_upload_busy = False
 
+def _refresh_upload_button(reschedule=True):
+    """Enable Start Upload when bucket, file, and key exist and no upload is active."""
+    try:
+        ok = True
+        for varname in ("up_bucket", "up_file", "up_key"):
+            v = globals().get(varname)
+            if v is None or not str(v.get()).strip():
+                ok = False
+                break
+        if globals().get("_upload_busy", False):
+            ok = False
+        btn = globals().get("up_btn_start")
+        if btn is not None:
+            btn.config(state=("normal" if ok else "disabled"))
+    except Exception:
+        pass
+    finally:
+        if reschedule:
+            try:
+                r = globals().get("root")
+                if r is not None:
+                    r.after(300, _refresh_upload_button)
+            except Exception:
+                pass
+
+def _mark_up_key_touched(*_):
+    global _UP_KEY_TOUCHED, _UP_KEY_SET_PROGRAMMATICALLY
+    if _UP_KEY_SET_PROGRAMMATICALLY:
+        return
+    _UP_KEY_TOUCHED = True
 
 def _hex_to_rgb_tuple(value):
     v = value.lstrip("#")
@@ -2318,7 +2351,11 @@ u_card.pack(fill="both", expand=True)
 
 up_bucket = tk.StringVar()
 up_key = tk.StringVar()
+up_key.trace_add("write", _mark_up_key_touched)
 up_file = tk.StringVar()
+up_bucket.trace_add("write", lambda *_: _refresh_upload_button(reschedule=False))
+up_key.trace_add("write",    lambda *_: _refresh_upload_button(reschedule=False))
+up_file.trace_add("write",   lambda *_: _refresh_upload_button(reschedule=False))
 up_create = tk.BooleanVar(value=True)
 _upload_key_state = {"manual": False, "auto_value": "", "suspend": False, "last_path": ""}
 
@@ -2359,10 +2396,37 @@ u_ent_key = ttk.Entry(u_form_section, textvariable=up_key)
 u_lbl_file = ttk.Label(u_form_section, text="Local File", style="SectionLabel.TLabel")
 u_ent_file = ttk.Entry(u_form_section, textvariable=up_file)
 def pick_upload_file():
+    from tkinter import filedialog
     f = filedialog.askopenfilename()
-    if f:
+    if not f:
+        return
+
+    # set the path field
+    try:
         up_file.set(f)
+    except Exception:
+        pass
+
+    # auto-fill the object key if user hasn't manually edited it (or it's empty)
+    base = os.path.basename(f)
+    global _UP_KEY_TOUCHED, _UP_KEY_SET_PROGRAMMATICALLY
+    try:
+        current = up_key.get().strip()
+    except Exception:
+        current = ""
+
+    if (not _UP_KEY_TOUCHED) or (not current):
+        _UP_KEY_SET_PROGRAMMATICALLY = True
+        try:
+            up_key.set(base)
+        finally:
+            _UP_KEY_SET_PROGRAMMATICALLY = False
+
+    # optional: focus the Start button
+    try:
         up_btn_start.focus_set()
+    except Exception:
+        pass
 u_btn_browse = ttk.Button(u_form_section, text="Browse…", style="Neutral.TButton", command=pick_upload_file)
 
 u_chk_create = ttk.Checkbutton(
@@ -3098,6 +3162,11 @@ def layout_settings_form(compact=False):
         label.grid(row=row, column=0, sticky="w", pady=pady)
         if control is not None:
             span = 2 if hint is None else 1
+        try:
+            if hasattr(control, "winfo_exists") and not control.winfo_exists():
+                return
+        except Exception:
+            pass
         control.grid(row=row, column=1, columnspan=span, sticky=control_sticky, pady=pady, padx=(16,0))
         if hint is not None:
             hint.grid(row=row, column=2, sticky="w", pady=pady, padx=(12, 0))
@@ -3290,7 +3359,6 @@ def _update_endpoint_field(*_):
             hint_value = "s3.<region>.amazonaws.com" if provider == PROVIDER_AWS else "play.min.io:9000"
         s_endpoint_hint.config(text=f"Example: {hint_value}", style="SectionHint.TLabel")
 
-    layout_settings_form(_layout_state.get("settings_compact", False))
     _on_endpoint_change()
 
 
@@ -3346,10 +3414,13 @@ def _on_provider_change(*_):
     _active_provider["value"] = provider
     _provider_loading = False
     _set_test_status("")
-    _update_endpoint_field()
     _provider_snapshot[provider] = _current_provider_state()
     _refresh_configuration_status()
 
+def _on_endpoint_change():
+    """Invoked by endpoint StringVar traces. Intentionally no-op so we do not
+    rebuild the Settings form while Tk is still processing widget changes."""
+    pass
 
 def _set_test_status(message, style="StatusInfo.TLabel"):
     cfg_test_status.set(message)
@@ -3454,6 +3525,8 @@ def _validate_fields(*_):
         else:
             s_btn_test.state(["disabled"])
     return can_test
+
+
 
 def _collect_settings():
     region = cfg_region.get().strip()
@@ -3651,7 +3724,7 @@ _apply_env_from_settings(_initial_settings or {})
 _refresh_configuration_status()
 s_btn_save.config(command=_on_settings_save)
 s_btn_test.config(command=_on_settings_test)
-cfg_custom_endpoint.trace_add("write", lambda *_: _update_endpoint_field())
+cfg_custom_endpoint.trace_add("write", lambda *_: _on_endpoint_change())
 cfg_region.trace_add("write", lambda *_: _update_endpoint_field())
 cfg_provider.trace_add("write", lambda *_: _on_provider_change())
 cfg_endpoint.trace_add("write", lambda *_: _on_endpoint_change())
@@ -3913,6 +3986,8 @@ def upload_start():
     bucket = up_bucket.get().lower().strip()
     key = (up_key.get().strip() or os.path.basename(up_file.get()))
     path = up_file.get().strip()
+    global _upload_busy
+    _upload_busy = True
 
     if not is_valid_bucket_name(bucket):
         messagebox.showerror("Invalid bucket name",
@@ -4071,6 +4146,9 @@ def upload_start():
 
 def upload_cancel():
     cancel_event.set()
+    global _upload_busy
+    _upload_busy = False
+    _refresh_upload_button(reschedule=False)
     _reset_progress_metrics(up_status)
     up_status.config(text="Cancelling…")
     statusbar.config(text="Cancelling…")
@@ -4078,6 +4156,8 @@ def upload_cancel():
 
 up_btn_start.config(command=upload_start)
 up_btn_cancel.config(command=upload_cancel)
+# Start periodic validation for the Start Upload button
+_refresh_upload_button(reschedule=True)
 
 def download_start():
     bucket = dl_bucket.get().lower().strip()
@@ -4573,9 +4653,12 @@ def _finish_err(status_label, msg):
     except Exception: pass
 
 def _rearm(start_btn, cancel_btn):
+    global _upload_busy
+    _upload_busy = False
     start_btn.config(state="normal")
     cancel_btn.config(state="disabled")
     statusbar.config(text="Ready")
+    _refresh_upload_button(reschedule=False)
     try:
         _update_upload_summary()
     except Exception:
